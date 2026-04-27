@@ -29,7 +29,11 @@ import structlog
 from ..crawler import md_detail
 from ..crawler.pdf_fetch import fetch_pdf
 from ..db import connect, init_db, upsert_md
-from ..extractor.pdf import extract_text, parse_rbi_ref_from_pdf_text
+from ..extractor.pdf import (
+    extract_text,
+    parse_issue_date_from_pdf_text,
+    parse_rbi_ref_from_pdf_text,
+)
 from .chunk import chunk_md_text
 
 logger = structlog.get_logger(__name__)
@@ -82,6 +86,7 @@ def index_md(
         return 1
 
     rbi_ref = parse_rbi_ref_from_pdf_text(extraction.text)
+    pdf_issue_date = parse_issue_date_from_pdf_text(extraction.text)
     document_id = f"rbi:master_direction:{md_id}"
 
     # Step 6: chunk.
@@ -107,12 +112,18 @@ def index_md(
         ).fetchone()
         title = existing["title"] if existing and existing["title"] else _strip_title_html(detail.raw_html)
 
+        # Date precedence: detail-page "Updated as on" stamp > PDF body issue
+        # date > whatever the list crawler captured. The PDF date is the most
+        # reliable signal when the detail page doesn't carry an explicit
+        # "Updated as on" (common for never-amended MDs).
+        last_updated_at = detail.updated_as_on or pdf_issue_date
+
         upsert_md(
             conn,
             md_id,
             title=title,
             detail_url=detail.detail_url,
-            last_updated_at=detail.updated_as_on,
+            last_updated_at=last_updated_at,
             department=None,
             pdf_urls=[detail.primary_pdf_url] + detail.annexure_pdf_urls,
             status="current",

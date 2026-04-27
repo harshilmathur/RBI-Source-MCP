@@ -63,9 +63,12 @@ class Chunk:
 # - "1.1" / "8.2" → second-level (Note: RBI sometimes uses "1.1" without period;
 #   we match either)
 # - "a." / "b)" → letter sub-clause
+# - "(1)" / "(10)" → parenthesized sub-clause (RBI uses these inside top-level
+#   paragraphs to enumerate items, e.g., "5. In these Directions... (1) ... (2) ...")
 TOP_LEVEL_PATTERN = re.compile(r"^\s*(\d{1,2})\.\s+(.+)")
 SUB_LEVEL_PATTERN = re.compile(r"^\s*(\d{1,2}\.\d{1,2})\.?\s+(.+)")
 LETTER_PATTERN = re.compile(r"^\s*([a-z])[.)]\s+(.+)")
+PAREN_NUM_PATTERN = re.compile(r"^\s*\((\d{1,3})\)\s+(.+)")
 
 
 def chunk_md_text(
@@ -147,6 +150,7 @@ def chunk_md_text(
             sub_m = SUB_LEVEL_PATTERN.match(line)
             top_m = TOP_LEVEL_PATTERN.match(line)
             letter_m = LETTER_PATTERN.match(line)
+            paren_m = PAREN_NUM_PATTERN.match(line)
 
             if sub_m:
                 # "8.2 ..." — second-level paragraph.
@@ -156,14 +160,22 @@ def chunk_md_text(
                 # "8. ..." — top-level paragraph.
                 new_anchor = top_m.group(1)
                 new_section = new_anchor
+            elif paren_m and current_anchor:
+                # "(1) ..." — parenthesized sub-clause under the current
+                # paragraph. Like letters, these are siblings of each other,
+                # NOT children. Strip any existing trailing parenthesized or
+                # letter segment before appending.
+                base = re.sub(r"\.\(\d+\)$|\.[a-z]$", "", current_anchor)
+                new_anchor = f"{base}.({paren_m.group(1)})"
             elif letter_m and current_anchor:
                 # "a. ..." — sub-clause under the current paragraph.
                 # Letters are siblings of each other (a, b, c), NOT children.
                 # If current_anchor already ends in a single-letter segment
-                # (e.g., "4.a"), strip that segment before appending the new
-                # letter — otherwise we end up with absurd anchors like
-                # "4.a.b.c.d" when the actual structure is just "4.b".
-                base = re.sub(r"\.[a-z]$", "", current_anchor)
+                # (e.g., "4.a") OR a parenthesized number (e.g., "4.(2)"),
+                # strip that segment before appending the new letter —
+                # otherwise we end up with absurd anchors like "4.a.b.c.d"
+                # when the actual structure is just "4.b".
+                base = re.sub(r"\.[a-z]$|\.\(\d+\)$", "", current_anchor)
                 new_anchor = f"{base}.{letter_m.group(1)}"
 
             if new_anchor and new_anchor != current_anchor:
