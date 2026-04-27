@@ -71,6 +71,56 @@ def test_chunk_id_is_stable_across_runs() -> None:
     assert [c.chunk_id for c in chunks_a] == [c.chunk_id for c in chunks_b]
 
 
+def test_parenthesized_sub_clauses_are_siblings_not_children() -> None:
+    """Parenthesized numbers like (1), (2), (10) are siblings under a paragraph,
+    NOT nested children. RBI uses these heavily inside definition paragraphs
+    (e.g., "5. In these Directions... (1) ... (2) ... (10) ...")."""
+    text = """
+5.  In these Directions, unless the context otherwise requires, the following
+    shall apply:
+
+    (1) Convenience Fee is a fixed or pro-rata charge on use of card.
+        It applies to all transactions executed online via card networks.
+    (2) Additional Factor of Authentication means a method of authenticating
+        a transaction using a factor independent of the primary credential.
+    (10) Most Important Terms and Conditions (MITC) are the standard set of
+         terms required to be communicated upfront.
+"""
+    chunks = chunk_md_text(text, document_id="rbi:md:test", md_id="test")
+    anchors = {c.paragraph_anchor for c in chunks}
+    # All parenthesized sub-clauses appear as siblings under section 5.
+    assert "5.(1)" in anchors
+    assert "5.(2)" in anchors
+    assert "5.(10)" in anchors
+    # No deep concatenation pathology: no anchor like "5.(1).(2)".
+    bad = [a for a in anchors if a and a.count("(") > 1]
+    assert not bad, f"deep concatenation in: {bad}"
+
+
+def test_letter_after_paren_resets_correctly() -> None:
+    """If a paragraph has both (1) (2) and then a sub-clause a, b, c — letter
+    transitions should NOT carry the parenthesized number forward."""
+    text = """
+4.  Top-level paragraph with substantial content explaining the overall
+    rule and what entities it applies to in detail.
+
+    (1) First parenthesized sub-clause with substantial body text that
+        passes the chunker minimum threshold for emission.
+
+    a.  Letter sub-clause with substantial content covering one specific
+        aspect of the rule and its concrete application.
+    b.  Second letter sub-clause with substantial content covering another
+        aspect that is parallel to clause a above.
+"""
+    chunks = chunk_md_text(text, document_id="rbi:md:test", md_id="test")
+    anchors = {c.paragraph_anchor for c in chunks}
+    # When letters arrive after (1), they should appear as 4.a / 4.b
+    # (NOT 4.(1).a / 4.(1).b). Both forms of sibling-reset must work.
+    assert "4.a" in anchors
+    assert "4.b" in anchors
+    assert "4.(1).a" not in anchors
+
+
 def test_form_feed_separates_pages() -> None:
     """Page numbers should track form-feed boundaries."""
     text = (

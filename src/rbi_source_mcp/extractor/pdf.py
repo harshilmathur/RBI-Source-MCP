@@ -153,6 +153,55 @@ def parse_rbi_ref_from_pdf_text(text: str) -> str | None:
     return re.sub(r"\s+", "", m.group(0))
 
 
+from datetime import datetime  # noqa: E402  (kept module-local for date parsing)
+
+
+def parse_issue_date_from_pdf_text(text: str) -> str | None:
+    """Find the issue date in the header of an MD PDF.
+
+    RBI MDs lay out the header like:
+
+        RBI/DPSS/2025-26/141
+        CO.DPSS.POLC.No.S-633/02-14-008/2025-26       September 15, 2025
+
+        All Payment System Providers ...
+
+    The date appears on the same line as (or immediately after) the secondary
+    reference number, in one of several formats. Strategy:
+        1. Look only in the first ~2000 chars (the header band).
+        2. Scan for known date formats; first hit wins.
+        3. Skip dates that look like part of a reference number (e.g.,
+           "2025-26" on its own).
+
+    Returns ISO 8601 (YYYY-MM-DD) or None.
+    """
+    head = text[:2000]
+    pairs: list[tuple[str, list[str]]] = [
+        # "September 15, 2025" / "Sep 15, 2025"
+        (r"\b([A-Z][a-z]+)\s+(\d{1,2}),\s*(\d{4})\b", ["%B %d, %Y", "%b %d, %Y"]),
+        # "15 September 2025" / "15 Sep 2025"
+        (r"\b(\d{1,2})\s+([A-Z][a-z]+)\s+(\d{4})\b", ["%d %B %Y", "%d %b %Y"]),
+        # "15/09/2025" / "15-09-2025"
+        (r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", ["%d/%m/%Y"]),
+        (r"\b(\d{1,2})-(\d{1,2})-(\d{4})\b", ["%d-%m-%Y"]),
+    ]
+    for pattern, formats in pairs:
+        for m in re.finditer(pattern, head):
+            for fmt in formats:
+                try:
+                    dt = datetime.strptime(m.group(0), fmt)
+                except ValueError:
+                    continue
+                # Sanity: RBI MDs are dated 1990-onwards; reject obvious
+                # noise (a "2026" embedded in a phrase like "annexure 2026"
+                # plus a stray "1" elsewhere wouldn't form a valid date,
+                # but range-check just in case).
+                if 1990 <= dt.year <= datetime.now().year + 1:
+                    return dt.date().isoformat()
+                break
+    return None
+
+
 def split_pages(text: str) -> list[str]:
     """Split pdftotext-with-layout output by form-feed page separators."""
     return text.split("\x0c")
