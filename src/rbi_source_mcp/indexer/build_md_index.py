@@ -99,12 +99,18 @@ def index_md(
     init_db(db_path)
     now = datetime.utcnow().isoformat() + "Z"
     with connect(db_path) as conn:
-        # Ensure the documents row exists (the list crawler may not have
-        # populated this MD yet on a fresh local DB).
+        # If the list crawler already populated this MD's row, keep its title
+        # (it carries the proper "Master Direction on X (Updated as on Y)" string).
+        # The detail page's static H1 is just "Master Directions" — useless.
+        existing = conn.execute(
+            "SELECT title FROM documents WHERE md_id = ?", (md_id,)
+        ).fetchone()
+        title = existing["title"] if existing and existing["title"] else _strip_title_html(detail.raw_html)
+
         upsert_md(
             conn,
             md_id,
-            title=_strip_title_html(detail.raw_html),
+            title=title,
             detail_url=detail.detail_url,
             last_updated_at=detail.updated_as_on,
             department=None,
