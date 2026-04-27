@@ -1,0 +1,98 @@
+name: Weekly corpus refresh
+
+# Locked from /plan-eng-review:
+#   - Sundays 02:00 UTC (RBI publishes weekly at most)
+#   - Hash-gated: unchanged PDFs skip re-extraction
+#   - Smoke test runs on the CI runner BEFORE anything lands on Fly
+#   - On smoke fail: abort, alert, live db.sqlite untouched
+#   - On smoke pass: scp to Fly + atomic-rename + SIGHUP server (~5s blip)
+#
+# v0.1 scope: only the crawl + commit step is implemented. The PDF extractor,
+# SQLite indexer, smoke test, and Fly deploy steps are stubbed and ship at v1.0
+# alongside the rbi.search and rbi.get_document tools.
+
+on:
+  schedule:
+    # Every Sunday at 02:00 UTC (07:30 IST Sunday morning).
+    - cron: "0 2 * * 0"
+  workflow_dispatch: {}  # Allow manual runs from the Actions tab.
+
+permissions:
+  contents: write  # to commit artifacts back to the repo if/when we choose to
+  actions: read
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false  # Don't kill an in-flight refresh; queue the next.
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit tests (regression + parser)
+        # Mandatory gate: parser tests must pass before we touch RBI.
+        run: pytest -q
+
+      - name: Crawl RBI list pages
+        env:
+          RBI_SOURCE_DB_NEW: ${{ github.workspace }}/data/db.sqlite.new
+        run: |
+          mkdir -p data
+          rbi-source-crawl
+
+      - name: Show crawl audit
+        run: |
+          echo "--- crawl_runs ---"
+          sqlite3 data/db.sqlite.new \
+            "SELECT source, status_code, items_seen, items_added, items_changed, error FROM crawl_runs ORDER BY id DESC LIMIT 5;" \
+            || true
+
+      - name: Verify corpus is non-empty (smoke gate)
+        run: |
+          MD_COUNT=$(sqlite3 data/db.sqlite.new "SELECT count(*) FROM documents;")
+          WD_COUNT=$(sqlite3 data/db.sqlite.new "SELECT count(*) FROM withdrawn;")
+          echo "Master Directions: $MD_COUNT"
+          echo "Withdrawn circulars: $WD_COUNT"
+          if [ "$MD_COUNT" -lt 30 ]; then
+            echo "::error::Suspicious: only $MD_COUNT MDs crawled (expected ~80). Aborting before deploy."
+            exit 1
+          fi
+          if [ "$WD_COUNT" -lt 5 ]; then
+            echo "::error::Suspicious: only $WD_COUNT withdrawn circulars crawled. Aborting before deploy."
+            exit 1
+          fi
+
+      - name: Upload corpus artifact
+        # Allows manual inspection from the Actions UI without committing the SQLite to git.
+        uses: actions/upload-artifact@v4
+        with:
+          name: rbi-corpus-${{ github.run_id }}
+          path: data/db.sqlite.new
+          retention-days: 30
+
+      # v1.0 steps (stubbed, not yet implemented):
+      #
+      # - name: Run smoke test (golden 20-query set + 3 regression tests)
+      #   run: pytest tests/smoke/ -q
+      #
+      # - name: Atomic-swap onto Fly
+      #   env:
+      #     FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      #   run: |
+      #     scripts/deploy_corpus.sh data/db.sqlite.new

@@ -1,0 +1,36 @@
+version: "3.9"
+
+# Local self-host: `docker compose up`
+# This is the path for "I want to run my own copy" users (per the design doc's
+# scope-locked "no npm publish" decision).
+
+services:
+  rbi-source-mcp:
+    build: .
+    image: rbi-source-mcp:dev
+    container_name: rbi-source-mcp
+    environment:
+      RBI_SOURCE_DB: /data/db.sqlite
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - rbi_data:/data
+    # MCP servers communicate over stdio when invoked directly. For local use
+    # via Claude Desktop / Claude Code config, point your client at:
+    #   command: docker compose run --rm rbi-source-mcp
+    stdin_open: true
+    tty: true
+
+  # One-shot crawler. Run with: `docker compose run --rm crawl`.
+  crawl:
+    build: .
+    image: rbi-source-mcp:dev
+    environment:
+      RBI_SOURCE_DB_NEW: /data/db.sqlite
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - rbi_data:/data
+    entrypoint: ["rbi-source-crawl"]
+    profiles: ["ops"]
+
+volumes:
+  rbi_data:
