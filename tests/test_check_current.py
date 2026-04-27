@@ -1,15 +1,16 @@
 """Tests for the rbi.check_current tool — the headline DX guarantee.
 
-Covers the locked v0.1 contract: every input gets a structured response,
-nothing silently fails. URL pattern coverage:
+Covers the v0.1 contract (revised after live crawl revealed the real URL
+patterns). Every input gets a structured response, nothing silently fails:
 
-    - BS_ViewMasDirections.aspx?id=...           → status: current/withdrawn/unknown
-    - NotificationUserWithdrawnCircular.aspx?Id= → status: withdrawn / unknown
-    - NotificationUser.aspx?Id=                  → unsupported_at_v0.1, reason: notification_url
+    - BS_ViewMasDirections.aspx?id=...           → current / withdrawn / unknown
+    - NotificationUser.aspx?Id=...               → withdrawn / not_withdrawn
+                                                   (the real headline-demo path)
+    - NotificationUserWithdrawnCircular.aspx     → list_page (it IS the list URL)
     - FAQView.aspx / FAQDisplay.aspx             → unsupported_at_v0.1, reason: faq_url
     - Textual "RBI/DOR/2020/106"                 → unsupported_at_v0.1, reason: textual_ref
     - Anything else                              → unsupported_at_v0.1, reason: unknown
-    - Empty string                               → unsupported_at_v0.1, reason: unknown
+    - Empty / whitespace                         → unsupported_at_v0.1, reason: unknown
 """
 
 from __future__ import annotations
@@ -32,10 +33,10 @@ def db(tmp_path: Path):
         upsert_md(
             conn,
             md_id="12550",
-            title="Master Direction - KYC, 2016",
+            title="Master Direction - KYC, 2016 (Updated as on April 25, 2026)",
             detail_url="https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12550",
-            issued_date="2016-02-25",
-            department="Department of Regulation",
+            last_updated_at="2026-04-25",
+            department=None,
             pdf_urls=[],
             status="current",
             now=now,
@@ -64,7 +65,7 @@ def test_current_md_returns_status_current(db) -> None:
     assert result["status"] == "current"
     assert result["document_id"] == "rbi:master_direction:12550"
     assert "KYC" in result["title"]
-    assert result["issued_date"] == "2016-02-25"
+    assert result["last_updated_at"] == "2026-04-25"
 
 
 def test_unknown_md_id_returns_status_unknown(db) -> None:
@@ -77,24 +78,37 @@ def test_unknown_md_id_returns_status_unknown(db) -> None:
     assert "not in the current corpus" in result["note"]
 
 
-def test_withdrawn_url_returns_status_withdrawn(db) -> None:
+def test_withdrawn_list_page_url_returns_list_page(db) -> None:
+    """The bare list-page URL is not a per-circular URL — say so clearly."""
     result = check_current(
         db,
-        "https://www.rbi.org.in/Scripts/NotificationUserWithdrawnCircular.aspx?Id=11234",
+        "https://www.rbi.org.in/Scripts/NotificationUserWithdrawnCircular.aspx",
+    )
+    assert result["status"] == "list_page"
+    assert "list page" in result["note"].lower()
+
+
+def test_notification_url_for_withdrawn_circular_returns_withdrawn(db) -> None:
+    """The headline magical-moment path: paste a NotificationUser URL whose Id
+    appears in the withdrawn-circulars list, get back 'withdrawn'."""
+    result = check_current(
+        db,
+        "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=11234",
     )
     assert result["status"] == "withdrawn"
     assert result["withdrawn_date"] == "2020-06-12"
-    assert result["replacement_ref"] == "RBI/DOR/2020/106"
+    # Replacement_ref is None at v0.1 (deferred); test that the field exists.
+    assert "replacement_ref" in result
 
 
-def test_notification_url_returns_unsupported(db) -> None:
+def test_notification_url_for_active_circular_returns_not_withdrawn(db) -> None:
+    """Notification ID NOT in the withdrawn list → 'not_withdrawn' with caveat."""
     result = check_current(
         db,
-        "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=12662",
+        "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=99999",
     )
-    assert result["status"] == "unsupported_at_v0.1"
-    assert result["reason"] == "notification_url"
-    assert "v1.0" in result["suggestion"]
+    assert result["status"] == "not_withdrawn"
+    assert "v1.0" in result["note"]
 
 
 def test_faq_url_returns_unsupported(db) -> None:

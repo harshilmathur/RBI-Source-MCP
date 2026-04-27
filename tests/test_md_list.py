@@ -18,10 +18,9 @@ FIXTURE_LIST_HTML = """
     <td>1</td>
     <td>
       <a href="BS_ViewMasDirections.aspx?id=12550">
-        Master Direction - Reserve Bank of India (Know Your Customer (KYC)) Directions, 2016
+        Master Direction - Reserve Bank of India (Know Your Customer (KYC)) Directions, 2016 (Updated as on April 25, 2026)
       </a>
     </td>
-    <td>Apr 25, 2026</td>
     <td>
       <a href="https://rbidocs.rbi.org.in/rdocs/notification/PDFs/SAMPLE.PDF">PDF</a>
     </td>
@@ -30,10 +29,9 @@ FIXTURE_LIST_HTML = """
     <td>2</td>
     <td>
       <a href="https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=11947">
-        Master Direction on Digital Lending
+        Master Direction on Digital Lending (Updated as on 02 Sep 2022)
       </a>
     </td>
-    <td>02/09/2022</td>
     <td>&nbsp;</td>
   </tr>
 </table>
@@ -43,10 +41,37 @@ FIXTURE_LIST_HTML = """
     <td>1</td>
     <td>
       <a href="/Scripts/BS_ViewMasDirections.aspx?id=11142">
-        Master Direction on Prepaid Payment Instruments
+        Master Direction on Prepaid Payment Instruments (Updated as on August 27, 2021)
       </a>
     </td>
-    <td>August 27, 2021</td>
+  </tr>
+</table>
+</body>
+</html>
+"""
+
+# Mimics the actual rbi.org.in BS_ViewMasDirections.aspx structure:
+# 2 cells per row (title with embedded "Updated as on" + file size), no date column,
+# department headings are JS-rendered so they're absent from static HTML.
+FIXTURE_REALISTIC_HTML = """
+<html>
+<body>
+<table>
+  <tr>
+    <td>
+      <a href="BS_ViewMasDirections.aspx?id=10190">
+        Master Direction- Compounding of Contraventions under FEMA, 1999 (Updated as on April 22, 2025)
+      </a>
+    </td>
+    <td>256 kb</td>
+  </tr>
+  <tr>
+    <td>
+      <a href="BS_ViewMasDirections.aspx?id=10476">
+        Master Direction - Operational Guidelines for Primary Dealers (Updated as on November 28, 2025)
+      </a>
+    </td>
+    <td>669 kb</td>
   </tr>
 </table>
 </body>
@@ -76,20 +101,34 @@ def test_picks_up_pdf_links_in_same_row() -> None:
     assert by_id["11947"].pdf_urls == []
 
 
-def test_extracts_dates_in_multiple_formats() -> None:
+def test_extracts_updated_as_on_dates_in_multiple_formats() -> None:
+    """Parses the 'Updated as on <date>' parenthetical from MD titles."""
     mds = md_list.parse_list_html(FIXTURE_LIST_HTML)
     by_id = {m.md_id: m for m in mds}
-    assert by_id["12550"].issued_date == "2026-04-25"
-    assert by_id["11947"].issued_date == "2022-09-02"
-    assert by_id["11142"].issued_date == "2021-08-27"
+    assert by_id["12550"].last_updated_at == "2026-04-25"
+    assert by_id["11947"].last_updated_at == "2022-09-02"
+    assert by_id["11142"].last_updated_at == "2021-08-27"
 
 
-def test_extracts_department_heading() -> None:
+def test_department_is_none_at_v0_1() -> None:
+    """The list page renders department headings via JavaScript; static HTML
+    doesn't carry them. v0.1 explicitly sets department=None.
+    """
     mds = md_list.parse_list_html(FIXTURE_LIST_HTML)
+    assert all(m.department is None for m in mds)
+
+
+def test_realistic_two_cell_row_structure() -> None:
+    """Real rbi.org.in rows have only 2 cells: title + file-size badge."""
+    mds = md_list.parse_list_html(FIXTURE_REALISTIC_HTML)
+    assert len(mds) == 2
     by_id = {m.md_id: m for m in mds}
-    # Department comes from the nearest preceding heading.
-    assert by_id["12550"].department == "Department of Regulation"
-    assert by_id["11142"].department == "Department of Payment and Settlement Systems"
+    assert by_id["10190"].last_updated_at == "2025-04-22"
+    assert by_id["10476"].last_updated_at == "2025-11-28"
+    # Department is None on the realistic structure too.
+    assert by_id["10190"].department is None
+    # No PDF links in the row → empty list.
+    assert by_id["10190"].pdf_urls == []
 
 
 def test_md_id_from_url_round_trips() -> None:
@@ -101,14 +140,14 @@ def test_md_id_from_url_round_trips() -> None:
 
 def test_diff_detects_added_changed_removed() -> None:
     prev = [
-        md_list.MasterDirection(md_id="A", title="Old A", detail_url="u/A", issued_date=None),
-        md_list.MasterDirection(md_id="B", title="B unchanged", detail_url="u/B", issued_date=None),
-        md_list.MasterDirection(md_id="C", title="To remove", detail_url="u/C", issued_date=None),
+        md_list.MasterDirection(md_id="A", title="Old A", detail_url="u/A", last_updated_at=None),
+        md_list.MasterDirection(md_id="B", title="B unchanged", detail_url="u/B", last_updated_at=None),
+        md_list.MasterDirection(md_id="C", title="To remove", detail_url="u/C", last_updated_at=None),
     ]
     curr = [
-        md_list.MasterDirection(md_id="A", title="A retitled", detail_url="u/A", issued_date=None),
-        md_list.MasterDirection(md_id="B", title="B unchanged", detail_url="u/B", issued_date=None),
-        md_list.MasterDirection(md_id="D", title="New D", detail_url="u/D", issued_date=None),
+        md_list.MasterDirection(md_id="A", title="A retitled", detail_url="u/A", last_updated_at=None),
+        md_list.MasterDirection(md_id="B", title="B unchanged", detail_url="u/B", last_updated_at=None),
+        md_list.MasterDirection(md_id="D", title="New D", detail_url="u/D", last_updated_at=None),
     ]
     added, changed, removed = md_list.diff_master_directions(prev, curr)
     assert {m.md_id for m in added} == {"D"}
