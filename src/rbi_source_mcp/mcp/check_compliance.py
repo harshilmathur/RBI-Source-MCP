@@ -9,8 +9,9 @@ This separation is locked in the design doc's "Why retrieval-only" section.
 The MCP stays defensibly on the source-layer side of the line; we are not
 an unauthorized regulatory advisor.
 
-v0.1.5: FTS5-only retrieval (sparse). Hybrid (FTS5 + sqlite-vec) ships at
-v0.5 once the corpus expands beyond a single MD.
+v0.5: hybrid retrieval (FTS5 sparse + sqlite-vec dense via bge-small-en-v1.5,
+fused with RRF). Falls back to FTS5-only when dense embeddings are
+unavailable for a given query (e.g., model load failure).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
-from ..db import escape_fts5_query, search_chunks_fts
+from ..db import escape_fts5_query, hybrid_search
 
 
 def check_compliance(
@@ -90,9 +91,22 @@ def check_compliance(
         return response
 
     md_id_filter = _md_id_for_topic_hint(topic_hint)
-    rows = search_chunks_fts(
+
+    # Compute the dense query embedding. Best-effort: if the embedder fails
+    # (model not downloaded, etc.), hybrid_search falls back to FTS5-only.
+    query_embedding: bytes | None = None
+    try:
+        from ..indexer.embed import embed_query, to_sqlite_vec_bytes
+
+        query_vec = embed_query(raw)
+        query_embedding = to_sqlite_vec_bytes(query_vec)
+    except Exception:  # noqa: BLE001
+        query_embedding = None
+
+    rows = hybrid_search(
         conn,
         fts_query,
+        query_embedding,
         limit=limit,
         md_id=md_id_filter,
         include_withdrawn=False,
@@ -100,49 +114,80 @@ def check_compliance(
 
     provisions = [_row_to_provision(r) for r in rows]
     response["relevant_provisions"] = provisions
+    response["retrieval"] = "hybrid" if query_embedding is not None else "sparse_only"
 
-    # Low-confidence signal: SQLite's bm25() returns negative scores; more
-    # negative = better match. Legitimate compliance queries against the PA
-    # corpus score around -8 to -13. Out-of-scope text (recipes, etc.) tops
-    # out around -4. Threshold at -5.0 gives a conservative cue for the
-    # consuming LLM to decline synthesis on weak matches.
+    # Low-confidence signal — calibrated empirically against the corpus:
     #
-    # When the corpus expands at v0.5, this threshold may need re-tuning;
-    # for v0.1.5 single-MD corpus, -5.0 holds up against real queries.
+    # Hybrid retrieval (RRF, k=60):
+    #   - Both rankers at rank 1: fusion = 2/61 ≈ 0.0328 (max)
+    #   - One ranker at rank 1, other absent: fusion = 1/61 ≈ 0.0164
+    #   - Both rankers at rank 5: fusion ≈ 0.0308
+    # Real compliance queries against the 7-MD corpus consistently score
+    # ≥0.025 with at least one ranker contributing strongly. Out-of-scope
+    # inputs (recipes, sports articles) max out at ~0.016 because only one
+    # ranker — usually dense, which always finds *some* semantic neighbor —
+    # places them. We require:
+    #   (a) top fusion >= 0.020, AND
+    #   (b) at least one ranker placed the top result in its top-10
+    # to mark high-confidence.
+    #
+    # Sparse-only fallback uses the v0.1.5 BM25 threshold (top score < -5.0).
     if not provisions:
         response["low_confidence"] = True
-        response["message"] = "No provisions matched. Either the topic is out of corpus or the input doesn't contain searchable terms."
+        response["message"] = (
+            "No provisions matched. Either the topic is out of corpus or the "
+            "input doesn't contain searchable terms."
+        )
     else:
-        top_score = provisions[0]["bm25_score"]
-        if top_score is None or top_score > -5.0:
-            response["low_confidence"] = True
+        top = provisions[0]
+        if response["retrieval"] == "hybrid":
+            top_fusion = top.get("fusion_score") or 0.0
+            sparse_rank = top.get("sparse_rank") or 999
+            dense_rank = top.get("dense_rank") or 999
+            best_rank = min(sparse_rank, dense_rank)
+            if top_fusion < 0.020 or best_rank > 10:
+                response["low_confidence"] = True
+        else:
+            bm25 = top.get("bm25_score")
+            if bm25 is None or bm25 > -5.0:
+                response["low_confidence"] = True
 
     return response
 
 
 _CAVEAT = (
-    "v0.1.5 corpus is limited (single Master Direction at this stage). Hybrid "
-    "(BM25 + dense vector) retrieval ships at v0.5 once the corpus expands. "
-    "Provisions returned here are source material only; this MCP does not "
-    "issue legal opinions or compliance verdicts. Verify with a human "
-    "compliance reviewer before acting."
+    "v0.5 hybrid retrieval (FTS5 + sqlite-vec dense embeddings, RRF fusion). "
+    "Corpus is currently limited to indexed Master Directions; coverage "
+    "expands as more MDs are indexed. Provisions returned here are source "
+    "material only; this MCP does not issue legal opinions or compliance "
+    "verdicts. Verify with a human compliance reviewer before acting."
 )
 
 
-def _row_to_provision(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_provision(row: dict | sqlite3.Row) -> dict[str, Any]:
+    """Hybrid_search returns dicts; sparse-only returns sqlite3.Row. Normalize to dict."""
+    if not isinstance(row, dict):
+        # sqlite3.Row → dict so the rest of this function uses uniform .get().
+        # row.keys() is the documented way to enumerate sqlite3.Row columns;
+        # iterating the Row yields values, not keys, hence the noqa.
+        row = {k: row[k] for k in row.keys()}  # noqa: SIM118
     return {
-        "document_id": row["document_id"],
-        "title": row["document_title"],
-        "rbi_ref": row["rbi_ref"],
-        "section": row["section"],
-        "paragraph_anchor": row["paragraph_anchor"],
-        "page": row["page"],
-        "quoted_text": row["text"],
-        "official_url": row["document_url"],
-        "pdf_url": row["pdf_url"],
-        "status": row["status"] or "current",
-        "last_updated_at": row["last_updated_at"],
-        "bm25_score": row["bm25_score"],
+        "document_id": row.get("document_id"),
+        "title": row.get("document_title"),
+        "rbi_ref": row.get("rbi_ref"),
+        "section": row.get("section"),
+        "paragraph_anchor": row.get("paragraph_anchor"),
+        "page": row.get("page"),
+        "quoted_text": row.get("text"),
+        "official_url": row.get("document_url"),
+        "pdf_url": row.get("pdf_url"),
+        "status": row.get("status") or "current",
+        "last_updated_at": row.get("last_updated_at"),
+        "bm25_score": row.get("bm25_score"),
+        "vec_distance": row.get("vec_distance"),
+        "sparse_rank": row.get("sparse_rank"),
+        "dense_rank": row.get("dense_rank"),
+        "fusion_score": row.get("fusion_score"),
     }
 
 

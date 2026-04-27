@@ -35,6 +35,7 @@ from ..extractor.pdf import (
     parse_rbi_ref_from_pdf_text,
 )
 from .chunk import chunk_md_text
+from .embed import embed_texts, to_sqlite_vec_bytes
 
 logger = structlog.get_logger(__name__)
 
@@ -131,12 +132,39 @@ def index_md(
         )
 
         # Idempotent chunk replacement: delete all existing chunks for this
-        # md_id, then re-insert. Cheaper than per-chunk upsert and the
-        # FTS5 triggers handle index rebuild correctly.
+        # md_id, then re-insert. Also delete the corresponding chunks_vec
+        # rows (keyed by chunks.rowid) so embeddings stay in sync.
+        old_rowids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT rowid FROM chunks WHERE md_id = ?", (md_id,)
+            )
+        ]
+        if old_rowids:
+            placeholders = ",".join("?" for _ in old_rowids)
+            try:
+                conn.execute(
+                    f"DELETE FROM chunks_vec WHERE rowid IN ({placeholders})",
+                    old_rowids,
+                )
+            except Exception as exc:  # noqa: BLE001 — chunks_vec may not exist
+                logger.warning("chunks_vec.delete_skip", error=str(exc))
         conn.execute("DELETE FROM chunks WHERE md_id = ?", (md_id,))
-        for c in chunks:
+
+        # Compute embeddings in one batch (much faster than one-at-a-time).
+        # ~50ms per chunk on CPU; for 200 chunks that's ~10s. First call also
+        # downloads/loads the bge-small model (~135 MB, one-time per machine).
+        try:
+            embeddings = embed_texts([c.text for c in chunks])
+            embeddings_ok = embeddings.shape[0] == len(chunks)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("embed.fail_skip_dense", error=str(exc))
+            embeddings = None
+            embeddings_ok = False
+
+        for i, c in enumerate(chunks):
             text_sha = _sha256(c.text)
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO chunks (
                     chunk_id, document_id, md_id, rbi_ref, section, paragraph_anchor,
@@ -159,6 +187,16 @@ def index_md(
                     now,
                 ),
             )
+            if embeddings_ok and embeddings is not None:
+                rowid = cur.lastrowid
+                try:
+                    conn.execute(
+                        "INSERT INTO chunks_vec(rowid, embedding) VALUES (?, ?)",
+                        (rowid, to_sqlite_vec_bytes(embeddings[i])),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("chunks_vec.insert_fail", error=str(exc))
+                    embeddings_ok = False  # don't keep retrying on the same MD
 
         # Audit row.
         conn.execute(

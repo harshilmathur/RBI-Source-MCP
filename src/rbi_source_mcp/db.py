@@ -1,13 +1,17 @@
 """SQLite schema and helpers for the RBI Source MCP corpus.
 
-v0.1 schema is intentionally minimal: just enough to power `check_current`
-end-to-end. v1.0 adds chunks, FTS5 index, and sqlite-vec embeddings.
+v0.1 added documents/withdrawn/crawl_runs.
+v0.1.5 added chunks + chunks_fts (FTS5 sparse).
+v0.5 added chunks_vec (sqlite-vec dense embeddings) and hybrid retrieval.
 
 Schema:
     documents          -- canonical MD records from the list crawl
-    withdrawn          -- withdrawal records (corpus + URL-based lookup)
+    withdrawn          -- withdrawal records
     crawl_runs         -- audit trail of every crawl
-    extraction_runs    -- audit trail of build pipeline runs (v1.0)
+    chunks             -- citable paragraph rows from indexed MDs
+    chunks_fts         -- FTS5 inverted index over chunks.text (sparse)
+    chunks_vec         -- sqlite-vec virtual table, 384-dim float32 (dense)
+    pdf_artifacts      -- audit trail of PDF fetches and extractions
 
 The DB file is rebuilt by the weekly GitHub Action and atomic-swapped onto
 the live Fly volume.
@@ -23,6 +27,32 @@ from pathlib import Path
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
+    """Load the sqlite-vec extension on a connection.
+
+    Returns True on success, False if loading is unsupported on this Python
+    build. The hybrid search path falls back to FTS5-only if False, so search
+    still works (just sparse-only).
+    """
+    try:
+        import sqlite_vec
+    except ImportError:
+        logger.warning("sqlite_vec.import_fail", note="dense retrieval disabled")
+        return False
+    try:
+        conn.enable_load_extension(True)
+    except (sqlite3.NotSupportedError, AttributeError):
+        logger.warning("sqlite_vec.load_extension_disabled")
+        return False
+    try:
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        return True
+    except sqlite3.OperationalError as exc:
+        logger.warning("sqlite_vec.load_fail", error=str(exc))
+        return False
 
 
 SCHEMA_SQL = """
@@ -137,10 +167,21 @@ CREATE TABLE IF NOT EXISTS pdf_artifacts (
 );
 """
 
+# v0.5: chunks_vec virtual table for dense embeddings. We create it
+# separately because virtual-table DDL requires the extension to be loaded.
+CHUNKS_VEC_SCHEMA_SQL = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec "
+    "USING vec0(embedding float[384]);"
+)
+
 
 @contextmanager
 def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
     """Context manager that opens, initializes, and closes a SQLite connection.
+
+    Loads the sqlite-vec extension (best-effort) so dense-retrieval queries
+    work. If extension loading is unsupported on this Python build, FTS5-only
+    sparse retrieval still works.
 
     The schema is applied on every open (CREATE IF NOT EXISTS makes it cheap
     and idempotent). Returns a connection with row_factory=sqlite3.Row.
@@ -151,6 +192,13 @@ def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(SCHEMA_SQL)
+        # Try to load sqlite-vec and create the virtual table. Both are
+        # idempotent and silent on failure (logs a warning).
+        if _load_sqlite_vec(conn):
+            try:
+                conn.execute(CHUNKS_VEC_SCHEMA_SQL)
+            except sqlite3.OperationalError as exc:
+                logger.warning("chunks_vec.create_fail", error=str(exc))
         yield conn
     finally:
         conn.commit()
@@ -256,6 +304,175 @@ def search_chunks_fts(
     params.append(limit)
     cur = conn.execute(sql, params)
     return cur.fetchall()
+
+
+def search_chunks_vec(
+    conn: sqlite3.Connection,
+    query_embedding: bytes,
+    *,
+    limit: int = 30,
+    md_id: str | None = None,
+    include_withdrawn: bool = False,
+) -> list[sqlite3.Row]:
+    """Dense vector search over chunks_vec.
+
+    `query_embedding` is the float32 vector serialized via sqlite_vec.serialize_float32.
+    Returns up to `limit` rows ordered by L2 distance ascending (closer = better).
+
+    Fails silently with an empty list if chunks_vec is missing (extension didn't
+    load, or no chunks have been embedded yet) so callers can fall back to
+    sparse-only retrieval.
+    """
+    sql = """
+        SELECT
+            c.chunk_id,
+            c.document_id,
+            c.md_id,
+            c.rbi_ref,
+            c.section,
+            c.paragraph_anchor,
+            c.page,
+            c.text,
+            c.pdf_url,
+            d.title          AS document_title,
+            d.detail_url     AS document_url,
+            d.last_updated_at,
+            d.status,
+            v.distance       AS vec_distance
+        FROM chunks_vec v
+        JOIN chunks    c ON c.rowid = v.rowid
+        LEFT JOIN documents d ON d.document_id = c.document_id
+        WHERE v.embedding MATCH ? AND k = ?
+    """
+    params: list[object] = [query_embedding, limit]
+    # Vec0 doesn't natively support filtering on joined columns inside its
+    # MATCH clause, so we filter after the K-NN retrieval. Pull more
+    # candidates (k = limit * over) to compensate for filtered drops.
+    sql += " ORDER BY v.distance ASC"
+    try:
+        cur = conn.execute(sql, params)
+    except sqlite3.OperationalError as exc:
+        logger.warning("vec_search.unavailable", error=str(exc))
+        return []
+    rows = cur.fetchall()
+    if md_id is not None:
+        rows = [r for r in rows if r["md_id"] == md_id]
+    if not include_withdrawn:
+        rows = [r for r in rows if (r["status"] or "current") == "current"]
+    return rows[:limit]
+
+
+def hybrid_search(
+    conn: sqlite3.Connection,
+    fts_query: str,
+    query_embedding: bytes | None,
+    *,
+    limit: int = 5,
+    md_id: str | None = None,
+    include_withdrawn: bool = False,
+    fetch_per_side: int = 30,
+    rrf_k: int = 60,
+) -> list[dict]:
+    """Hybrid search: FTS5 (sparse) + sqlite-vec (dense), fused via RRF.
+
+    Reciprocal Rank Fusion (k=60 by default — Cormack et al., 2009): a robust
+    fusion that doesn't require score normalization between heterogeneous
+    rankers. For each candidate doc, score = sum over rankers of 1/(k+rank).
+
+    If `query_embedding` is None or chunks_vec is empty, falls back to
+    FTS5-only ranking. If FTS5 returns no results, falls back to vec-only.
+
+    Returns up to `limit` rows as plain dicts (sqlite3.Row doesn't survive
+    the fusion merge cleanly), each carrying a `fusion_score` plus the
+    underlying `bm25_score` and `vec_distance` (whichever applied).
+    """
+    sparse = search_chunks_fts(
+        conn,
+        fts_query,
+        limit=fetch_per_side,
+        md_id=md_id,
+        include_withdrawn=include_withdrawn,
+    )
+    dense: list[sqlite3.Row] = []
+    if query_embedding is not None:
+        dense = search_chunks_vec(
+            conn,
+            query_embedding,
+            limit=fetch_per_side,
+            md_id=md_id,
+            include_withdrawn=include_withdrawn,
+        )
+
+    # Fast path: only one side returned anything.
+    if not dense and not sparse:
+        return []
+    if not dense:
+        return [_row_to_dict(r, sparse_rank=i + 1, dense_rank=None) for i, r in enumerate(sparse[:limit])]
+    if not sparse:
+        return [_row_to_dict(r, sparse_rank=None, dense_rank=i + 1) for i, r in enumerate(dense[:limit])]
+
+    # Build RRF fusion. Key by chunk_id since same chunk may appear in both.
+    sparse_rank: dict[str, int] = {r["chunk_id"]: i + 1 for i, r in enumerate(sparse)}
+    dense_rank: dict[str, int] = {r["chunk_id"]: i + 1 for i, r in enumerate(dense)}
+    rows_by_id: dict[str, sqlite3.Row] = {}
+    for r in sparse:
+        rows_by_id[r["chunk_id"]] = r
+    for r in dense:
+        rows_by_id.setdefault(r["chunk_id"], r)
+
+    scored: list[tuple[float, str]] = []
+    for chunk_id in rows_by_id:
+        s = 0.0
+        if chunk_id in sparse_rank:
+            s += 1.0 / (rrf_k + sparse_rank[chunk_id])
+        if chunk_id in dense_rank:
+            s += 1.0 / (rrf_k + dense_rank[chunk_id])
+        scored.append((s, chunk_id))
+    scored.sort(reverse=True)
+
+    out: list[dict] = []
+    for fusion_score, chunk_id in scored[:limit]:
+        row = rows_by_id[chunk_id]
+        out.append(
+            _row_to_dict(
+                row,
+                sparse_rank=sparse_rank.get(chunk_id),
+                dense_rank=dense_rank.get(chunk_id),
+                fusion_score=fusion_score,
+            )
+        )
+    return out
+
+
+def _row_to_dict(
+    row: sqlite3.Row,
+    *,
+    sparse_rank: int | None,
+    dense_rank: int | None,
+    fusion_score: float | None = None,
+) -> dict:
+    """Coalesce a sparse OR dense result row into the unified dict shape."""
+    keys = row.keys()
+    return {
+        "chunk_id": row["chunk_id"],
+        "document_id": row["document_id"],
+        "md_id": row["md_id"],
+        "rbi_ref": row["rbi_ref"],
+        "section": row["section"],
+        "paragraph_anchor": row["paragraph_anchor"],
+        "page": row["page"],
+        "text": row["text"],
+        "pdf_url": row["pdf_url"],
+        "document_title": row["document_title"],
+        "document_url": row["document_url"],
+        "last_updated_at": row["last_updated_at"],
+        "status": row["status"],
+        "bm25_score": row["bm25_score"] if "bm25_score" in keys else None,
+        "vec_distance": row["vec_distance"] if "vec_distance" in keys else None,
+        "sparse_rank": sparse_rank,
+        "dense_rank": dense_rank,
+        "fusion_score": fusion_score,
+    }
 
 
 def escape_fts5_query(text: str) -> str:
