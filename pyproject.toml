@@ -26,9 +26,13 @@ dependencies = [
     "httpx>=0.27.0",
     "beautifulsoup4>=4.12.0",
     "lxml>=5.0.0",
-    # Storage
-    # NOTE: sqlite-vec is loaded as a SQLite extension; the Python pkg ships the .so/.dylib
+    # Storage: sqlite-vec is loaded as a SQLite extension; the Python pkg ships
+    # the platform-appropriate .so/.dylib alongside a Python loader helper.
     "sqlite-vec>=0.1.0",
+    # Embeddings (v0.5): bge-small-en-v1.5 via sentence-transformers.
+    # ~135 MB model download on first use, cached locally.
+    "sentence-transformers>=3.0.0",
+    "numpy>=1.26.0",
     # Logging
     "structlog>=24.0.0",
 ]
