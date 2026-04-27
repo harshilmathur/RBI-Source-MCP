@@ -45,6 +45,7 @@ dev = [
 [project.scripts]
 rbi-source-mcp = "rbi_source_mcp.server:main"
 rbi-source-crawl = "rbi_source_mcp.crawler.refresh:main"
+rbi-source-index = "rbi_source_mcp.indexer.build_md_index:main"
 
 [build-system]
 requires = ["hatchling"]
