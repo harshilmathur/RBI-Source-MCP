@@ -147,10 +147,45 @@ def _row_to_provision(row: sqlite3.Row) -> dict[str, Any]:
 
 
 # Topic hint → md_id mapping. Hand-curated; expands as more MDs land.
-_TOPIC_TO_MD_ID: dict[str, str] = {
+# When a topic is ambiguous (e.g., 'kyc' applies to both Commercial Banks and
+# NBFC KYC MDs), we map to None so retrieval runs across the full corpus
+# and the LLM can sort entities. Topics that map to one specific MD use
+# that MD's id.
+_TOPIC_TO_MD_ID: dict[str, str | None] = {
+    # Payment Aggregator MD (12896)
     "payment_aggregator": "12896",
     "pa": "12896",
     "pa_pg": "12896",
+    # Commercial Banks KYC MD (13141)
+    "kyc_bank": "13141",
+    "kyc_commercial_bank": "13141",
+    "bank_kyc": "13141",
+    # NBFC KYC MD (12943)
+    "kyc_nbfc": "12943",
+    "nbfc_kyc": "12943",
+    # PPIs / Prepaid (12156)
+    "ppi": "12156",
+    "prepaid": "12156",
+    "prepaid_payment_instrument": "12156",
+    "wallet": "12156",
+    # Cards / Tokenisation (13155 — Commercial Banks)
+    "cards": "13155",
+    "credit_card": "13155",
+    "debit_card": "13155",
+    "tokenisation": "13155",
+    "tokenization": "13155",
+    # E-mandate / Recurring (13374)
+    "e_mandate": "13374",
+    "emandate": "13374",
+    "recurring": "13374",
+    "recurring_payment": "13374",
+    # Digital Payment Security (12032)
+    "digital_payment_security": "12032",
+    "payment_security": "12032",
+    "afa": "12032",
+    "additional_factor_authentication": "12032",
+    # Ambiguous topics — return None so search spans full corpus.
+    "kyc": None,
 }
 
 
