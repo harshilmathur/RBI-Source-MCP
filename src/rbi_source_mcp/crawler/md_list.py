@@ -31,19 +31,40 @@ USER_AGENT = "rbi-source-mcp/0.1 (+https://github.com/harshilmathur/RBI-Source-M
 
 @dataclass(slots=True)
 class MasterDirection:
-    """One row from the Master Directions list page."""
+    """One row from the Master Directions list page.
 
-    md_id: str  # numeric ID from ?id= query param, source of truth for identity
+    Fields:
+        md_id            -- numeric ID from ?id= query param. Source of truth for identity.
+        title            -- raw title text from the anchor; usually contains an
+                            "(Updated as on <date>)" parenthetical.
+        detail_url       -- canonical detail-page URL.
+        last_updated_at  -- best-effort parse of the "Updated as on" date inside
+                            the title or in the row. None if not parseable.
+        pdf_urls         -- v0.1 always empty: the list page only links to detail
+                            pages, not PDFs. PDF URLs are populated in v1.0
+                            after the detail-page crawler lands.
+        department       -- always None at v0.1: the list page renders department
+                            headings client-side via JavaScript, so static crawl
+                            doesn't see them. Populated in v1.0 if/when needed.
+    """
+
+    md_id: str
     title: str
     detail_url: str
-    issued_date: str | None  # ISO 8601 if parseable, else raw text, else None
+    last_updated_at: str | None  # ISO 8601 if parseable, else None
     pdf_urls: list[str] = field(default_factory=list)
-    department: str | None = None  # group/department heading from the page
+    department: str | None = None  # always None at v0.1; reserved for v1.0
 
     @property
     def document_id(self) -> str:
         """Stable canonical ID."""
         return f"rbi:master_direction:{self.md_id}"
+
+    # Backwards-compat alias for the old field name.
+    @property
+    def issued_date(self) -> str | None:  # pragma: no cover — alias only
+        """Deprecated alias for last_updated_at. Will be removed at v1.0."""
+        return self.last_updated_at
 
 
 @dataclass(slots=True)
@@ -131,12 +152,15 @@ def parse_list_html(html: str, base_url: str = LIST_URL) -> list[MasterDirection
         # Canonicalize to www.rbi.org.in (RBI sometimes serves rbi.org.in / m.rbi.org.in).
         detail_url = _canonicalize_url(detail_url)
 
-        # Walk up to find the row this anchor is in, then extract date and department.
+        # Walk up to find the row; pull "Updated as on" date from title or row.
         row = _nearest_row(anchor)
-        issued_date = _extract_date(row) if row else None
-        department = _extract_department(anchor, soup)
+        last_updated_at = _extract_updated_as_on(title) or (
+            _extract_date(row) if row else None
+        )
 
-        # Look for sibling PDF links in the same row.
+        # Look for sibling PDF links in the same row. v0.1 list pages don't
+        # carry direct PDF links (only detail-page links), but the helper is
+        # cheap and forward-compatible with detail-page crawls.
         pdf_urls: list[str] = []
         if row:
             for pdf_anchor in row.find_all("a", href=True):
@@ -149,9 +173,9 @@ def parse_list_html(html: str, base_url: str = LIST_URL) -> list[MasterDirection
                 md_id=md_id,
                 title=title,
                 detail_url=detail_url,
-                issued_date=issued_date,
+                last_updated_at=last_updated_at,
                 pdf_urls=pdf_urls,
-                department=department,
+                department=None,  # JS-rendered; not available in static HTML
             )
         )
 
@@ -268,20 +292,25 @@ def _parse_date_string(text: str) -> str | None:
     return None
 
 
-def _extract_department(anchor: Tag, soup: BeautifulSoup) -> str | None:
-    """Find the section heading above this anchor.
+def _extract_updated_as_on(title: str) -> str | None:
+    """Pull an 'Updated as on <date>' parenthetical out of an MD title.
 
-    The list page groups MDs under department headings (h2/h3/strong/etc.).
-    We walk backward from the anchor's row until we hit a heading-like element.
+    RBI titles commonly look like:
+        "Master Direction - Reserve Bank of India (KYC) Directions, 2016
+         (Updated as on April 22, 2025)"
+
+    Returns ISO 8601 if parseable; None if no Updated-as-on phrase found.
     """
-    row = _nearest_row(anchor)
-    if not row:
+    if not title:
         return None
-    for prev in row.find_all_previous(["h2", "h3", "h4", "strong", "b"]):
-        text = _clean_text(prev.get_text())
-        if text and len(text) < 200:
-            return text
-    return None
+    match = re.search(
+        r"Updated\s+as\s+on\s+([A-Za-z]+\s+\d{1,2},?\s*\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4})",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return _parse_date_string(match.group(1))
 
 
 def md_id_from_url(url: str) -> str | None:

@@ -29,7 +29,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 import structlog
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 logger = structlog.get_logger(__name__)
 
@@ -104,33 +104,40 @@ def fetch_list_page(
 def parse_list_html(html: str, base_url: str = LIST_URL) -> list[WithdrawnCircular]:
     """Parse the withdrawn-circulars list HTML.
 
-    The page is table-rendered, similar to other RBI list pages. Each row
-    typically holds: original ref, title, issue date, withdrawn date, plus
-    optional links to the original circular and/or the withdrawing circular.
+    The real rbi.org.in page is multi-section. Section layouts vary:
+        - "Circulars Withdrawn" section (oldest): 3 cells [date, title, department]
+        - "RRA 2.0" sections (en-masse withdrawals): 4 cells [sno, ref, title, date]
 
-    We anchor on table rows and extract whatever we can; missing fields are
-    None rather than raising.
+    Common across all sections: a real data row contains EITHER a
+    NotificationUser.aspx anchor (the link back to the original circular) OR
+    an identifiable RBI/agency reference number. Header rows have neither.
+
+    For v0.1 we extract whatever we can and accept partial coverage:
+        - original_id      from NotificationUser.aspx?Id= anchor when present
+        - original_ref     from a cell that looks like an agency reference
+        - title            longest cell
+        - withdrawn_date   first cell that's primarily a date (or only date in row)
+        - replacement_ref  deferred to v1.0 (requires detail-page crawls)
     """
     soup = BeautifulSoup(html, "lxml")
 
     results: list[WithdrawnCircular] = []
-    seen_signatures: set[tuple[str | None, str]] = set()
+    # Dedupe key: prefer original_id; fall back to title hash for ID-less rows.
+    seen_keys: set[tuple[str, str]] = set()
 
-    # Look at every <tr>; many will be header/spacer rows that we'll skip
-    # by requiring at least one date or one RBI ref to be present.
     for row in soup.find_all("tr"):
         cells = row.find_all(["td", "th"])
         if len(cells) < 2:
             continue
 
         cell_texts = [_clean_text(c.get_text(" ", strip=True)) for c in cells]
-        joined = " | ".join(cell_texts)
+        joined = " ".join(cell_texts)
 
-        # Heuristic: a real data row mentions a year (issue or withdrawal date).
+        # Heuristic: a real data row mentions at least one year.
         if not re.search(r"\b(19|20)\d{2}\b", joined):
             continue
 
-        # Extract anchors in this row.
+        # Extract anchor → original_id, detail_url.
         original_id: str | None = None
         detail_url: str | None = None
         for anchor in row.find_all("a", href=True):
@@ -139,19 +146,47 @@ def parse_list_html(html: str, base_url: str = LIST_URL) -> list[WithdrawnCircul
             if notif_match and original_id is None:
                 original_id = notif_match.group(1)
                 detail_url = _canonicalize_url(urljoin(base_url, href))
+                break
 
-        title = _pick_longest_text(cell_texts)
+        # Reference number: scan each cell for one. RBI/agency refs vary widely:
+        #   "RBI/2015-16/100"
+        #   "DNBS.(PD).CC.No.39/SCRC/26.03.001/2014-2015"
+        #   "IECD.No.3/04.02.02/2002-03"
+        # We accept any cell that looks ref-shaped and isn't a date or title.
+        original_ref: str | None = None
+        for cell_text in cell_texts:
+            if _is_ref_like(cell_text):
+                original_ref = cell_text
+                break
+
+        # Date: first cell that's primarily date-shaped.
+        withdrawn_date: str | None = None
+        issued_date: str | None = None
+        for cell_text in cell_texts:
+            iso = _parse_date_anywhere(cell_text)
+            if iso and _looks_like_date_cell(cell_text):
+                # First date-only cell wins. We can't reliably distinguish
+                # "issued" vs "withdrawn" across sections, so we surface it
+                # as withdrawn_date (the row's primary semantic in this list).
+                withdrawn_date = iso
+                break
+        if not withdrawn_date:
+            # Fallback: parse any date in the joined row text.
+            withdrawn_date = _parse_date_anywhere(joined)
+
+        # Title: prefer the cell that contains the NotificationUser anchor;
+        # else longest non-date, non-ref, non-serial cell.
+        title = _pick_title(cells, cell_texts, original_ref=original_ref)
         if not title:
             continue
 
-        original_ref = _extract_rbi_ref(joined)
-        issued_date, withdrawn_date = _extract_two_dates(joined)
-        replacement_ref = _extract_replacement_ref(joined, original_ref)
-
-        signature = (original_id, title.lower())
-        if signature in seen_signatures:
+        # Dedup: prefer original_id; otherwise (title, ref) tuple as a stable key.
+        dedupe_key: tuple[str, str] = (
+            ("id", original_id) if original_id else ("title_ref", f"{title.lower()}|{original_ref or ''}")
+        )
+        if dedupe_key in seen_keys:
             continue
-        seen_signatures.add(signature)
+        seen_keys.add(dedupe_key)
 
         results.append(
             WithdrawnCircular(
@@ -161,7 +196,7 @@ def parse_list_html(html: str, base_url: str = LIST_URL) -> list[WithdrawnCircul
                 title=title,
                 issued_date=issued_date,
                 withdrawn_date=withdrawn_date,
-                replacement_ref=replacement_ref,
+                replacement_ref=None,  # ships at v1.0
                 detail_url=detail_url,
             )
         )
@@ -212,12 +247,101 @@ def _pick_longest_text(texts: list[str]) -> str:
     return max(texts, key=len, default="")
 
 
-def _extract_rbi_ref(text: str) -> str | None:
-    """Find the first RBI reference number in a string."""
-    match = RBI_REF_PATTERN.search(text)
-    if not match:
+def _is_ref_like(text: str) -> bool:
+    """Does this cell look like an RBI/agency reference number?
+
+    Heuristics: short-ish (<200 chars), contains at least one '/' or '.', has
+    digits and uppercase letters mixed in characteristic patterns. Excludes
+    plain dates and title-shaped text.
+    """
+    if not text or len(text) > 200:
+        return False
+    if " " in text and len(text.split()) > 6:  # Long phrase = title, not ref.
+        return False
+    if not re.search(r"[A-Z]{2,}", text):  # Refs always have ALLCAPS chunks.
+        return False
+    if not re.search(r"[/.]", text):  # Refs always have / or . separators.
+        return False
+    if _parse_date_anywhere(text) and not re.search(r"[A-Z]{2,}.*[/.].*\d", text):
+        return False
+    # Recognizable patterns:
+    #   "RBI/..."
+    #   "DNBS.(PD).CC.No.39/..."
+    #   "IECD.No.3/04.02.02/2002-03"
+    if re.match(r"^[A-Z][A-Z0-9.()/_\-]*[/.]", text.strip()):
+        return True
+    return bool(text.upper().startswith("RBI"))
+
+
+def _looks_like_date_cell(text: str) -> bool:
+    """A cell that's mostly just a date (not a title that happens to mention a year)."""
+    if not text:
+        return False
+    parsed = _parse_date_anywhere(text)
+    if not parsed:
+        return False
+    # Date-only cells are short. Titles with embedded years are longer.
+    return len(text) <= 25
+
+
+def _parse_date_anywhere(text: str) -> str | None:
+    """Try every known RBI date format in `text`. Returns ISO 8601 or None."""
+    if not text:
         return None
-    return _clean_text(match.group(0))
+    pairs: list[tuple[str, list[str]]] = [
+        (r"\b(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b", ["%d %B %Y", "%d %b %Y"]),
+        (r"\b([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\b", ["%B %d, %Y", "%b %d, %Y"]),
+        (r"\b([A-Za-z]+)\s+(\d{1,2})\s+(\d{4})\b", ["%B %d %Y", "%b %d %Y"]),
+        (r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", ["%d/%m/%Y"]),
+        (r"\b(\d{1,2})-(\d{1,2})-(\d{4})\b", ["%d-%m-%Y"]),
+    ]
+    for pattern, formats in pairs:
+        m = re.search(pattern, text)
+        if not m:
+            continue
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(m.group(0), fmt)
+            except ValueError:
+                continue
+            return dt.date().isoformat()
+    return None
+
+
+def _pick_title(cells: list[Tag], texts: list[str], *, original_ref: str | None) -> str:
+    """Pick the title cell.
+
+    Strategy:
+      1. If a cell wraps an `<a href="...NotificationUser.aspx...">` anchor,
+         prefer that cell's text (section 1 layout: date, title, dept).
+      2. Otherwise pick the longest cell that isn't a date, ref, or serial
+         (section 2 layout: sno, ref, title, date — title is the longest cell).
+    """
+    # 1. Prefer the cell containing the NotificationUser anchor.
+    for cell, text in zip(cells, texts, strict=True):
+        if not text:
+            continue
+        for anchor in cell.find_all("a", href=True):
+            if NOTIF_URL_PATTERN.search(anchor.get("href", "")):
+                return text
+
+    # 2. Longest non-date, non-ref, non-serial cell.
+    candidates = []
+    for t in texts:
+        if not t:
+            continue
+        if _looks_like_date_cell(t):
+            continue
+        if original_ref and t == original_ref:
+            continue
+        if _is_ref_like(t):  # Catches refs even if not the chosen original_ref.
+            continue
+        if re.match(r"^\d+\.?$", t):  # Serial number cells like "848." or "3286.".
+            continue
+        candidates.append(t)
+    if not candidates:
+        return ""
+    return max(candidates, key=len)
 
 
 def _extract_two_dates(text: str) -> tuple[str | None, str | None]:

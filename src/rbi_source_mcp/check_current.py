@@ -1,16 +1,20 @@
 """The headline tool: rbi.check_current.
 
 Given an RBI URL or textual reference, return current/withdrawn/superseded
-plus the replacement document when known. Locked v0.1 contract:
+plus the replacement document when known. v0.1 contract (revised after live
+crawl revealed the real URL pattern of withdrawn circulars):
 
     Supported URL patterns (returns a definitive answer):
-        - https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=<MD_ID>
-        - https://www.rbi.org.in/Scripts/NotificationUserWithdrawnCircular.aspx?Id=<NOTIF_ID>
+        - BS_ViewMasDirections.aspx?id=<MD_ID>          -- Master Direction lookup
+        - NotificationUser.aspx?Id=<NOTIF_ID>           -- circular: checked against
+                                                          the withdrawn list
+
+    Note: NotificationUserWithdrawnCircular.aspx?Id=... is the LIST page URL,
+    not a per-record URL. Those URLs return a structured "list_page" response.
 
     Unsupported patterns (returns structured "unsupported_at_v0.1"):
-        - NotificationUser.aspx?Id=... (regular notifications, not in MVP)
         - FAQView.aspx, FAQDisplay.aspx (FAQs, not in MVP)
-        - Textual `RBI/...` references (parser ships at v1.0)
+        - Textual `RBI/...` or `DOR/...` references (parser ships at v1.0)
         - Anything else
 
 The function NEVER raises and NEVER silently fails. Every input gets a
@@ -43,7 +47,8 @@ def check_current(conn: sqlite3.Connection, url_or_ref: str) -> dict[str, Any]:
                 "document_id": str | None,
                 "title": str | None,
                 "official_url": str,
-                "issued_date": str | None,         # ISO 8601 if known
+                "last_updated_at": str | None,     # MD: "Updated as on" date (ISO 8601)
+                "issued_date": str | None,         # withdrawn: original issue date (ISO 8601)
                 "withdrawn_date": str | None,
                 "replacement_ref": str | None,
                 "as_of": str,                      # ISO 8601 of this lookup
@@ -98,66 +103,75 @@ def check_current(conn: sqlite3.Connection, url_or_ref: str) -> dict[str, Any]:
             "document_id": row["document_id"],
             "title": row["title"],
             "official_url": row["detail_url"],
-            "issued_date": row["issued_date"],
+            "last_updated_at": row["last_updated_at"],
             "withdrawn_date": None,  # MDs don't have a single withdrawn_date in v0.1
             "replacement_ref": None,
             "as_of": now,
             "source_url": raw,
         }
 
-    # Branch 2: looks like a withdrawn-circular URL
+    # Branch 2: the withdrawn-list page URL itself (no per-record ID)
     if withdrawn_list.is_withdrawn_url(raw):
-        # The withdrawn list page itself uses NotificationUserWithdrawnCircular.aspx?Id=
-        # to identify the withdrawal record. We treat that ID as the original circular ID
-        # for v0.1 — the page links from each withdrawal record back to the original
-        # NotificationUser.aspx page using the same ID family.
+        return {
+            "status": "list_page",
+            "official_url": raw,
+            "as_of": now,
+            "source_url": raw,
+            "note": (
+                "This is the RBI Withdrawn Circulars list page, not a per-circular "
+                "URL. To check a specific circular, paste its NotificationUser.aspx URL."
+            ),
+        }
+
+    # Branch 3: a notification / circular URL — check it against the withdrawn list.
+    # This is the real headline demo path: someone pastes a 2017 RBI URL, gets back
+    # a "withdrawn" verdict if the circular is in our corpus.
+    if NOTIF_URL_PATTERN.search(raw):
         parsed = urlparse(raw)
         qs = parse_qs(parsed.query)
         ids = qs.get("Id") or qs.get("id") or qs.get("ID") or []
         if not ids:
             return _unsupported(
                 reason="unknown",
-                suggestion="Withdrawn-circular URL has no Id parameter.",
+                suggestion="NotificationUser URL has no Id parameter.",
                 source_url=raw,
             )
         original_id = ids[0]
         row = find_withdrawn_by_original_id(conn, original_id)
-        if row is None:
+        if row is not None:
             return {
-                "status": "unknown",
+                "status": "withdrawn",
                 "document_id": None,
-                "title": None,
-                "official_url": raw,
-                "issued_date": None,
-                "withdrawn_date": None,
-                "replacement_ref": None,
+                "title": row["title"],
+                "official_url": row["detail_url"] or raw,
+                "issued_date": row["issued_date"],
+                "withdrawn_date": row["withdrawn_date"],
+                "replacement_ref": row["replacement_ref"],
                 "as_of": now,
                 "source_url": raw,
-                "note": "This withdrawal-circular ID is not in the current corpus.",
+                "note": (
+                    "This circular is in RBI's withdrawn-circulars list. "
+                    "Replacement reference and exact supersession chain ship at v1.0."
+                ),
             }
+        # Not found in withdrawn list. v0.1 doesn't have the full active-circular
+        # corpus (only Master Directions), so we can't confirm it's CURRENT — we
+        # can only say it's not in our withdrawn list.
         return {
-            "status": "withdrawn",
-            "document_id": None,  # Withdrawn circulars are not "documents" in the v0.1 schema
-            "title": row["title"],
-            "official_url": row["detail_url"] or raw,
-            "issued_date": row["issued_date"],
-            "withdrawn_date": row["withdrawn_date"],
-            "replacement_ref": row["replacement_ref"],
+            "status": "not_withdrawn",
+            "document_id": None,
+            "title": None,
+            "official_url": raw,
             "as_of": now,
             "source_url": raw,
-        }
-
-    # Branch 3: regular notification URL (out of v0.1 scope)
-    if NOTIF_URL_PATTERN.search(raw):
-        return _unsupported(
-            reason="notification_url",
-            suggestion=(
-                "MVP covers Master Directions only. Notifications and standalone "
-                "circulars are scoped for v1.0. The URL points at an active RBI "
-                "notification page."
+            "note": (
+                "This circular is NOT in RBI's withdrawn-circulars list as of the "
+                "last refresh, so it likely remains active. v0.1 does not crawl the "
+                "active-circulars corpus, so we cannot definitively confirm 'current' "
+                "status — only that it has not been withdrawn. Active-circulars "
+                "coverage ships at v1.0."
             ),
-            source_url=raw,
-        )
+        }
 
     # Branch 4: FAQ URL (out of v0.1 scope)
     if FAQ_URL_PATTERN.search(raw):
@@ -172,9 +186,10 @@ def check_current(conn: sqlite3.Connection, url_or_ref: str) -> dict[str, Any]:
         return _unsupported(
             reason="textual_ref",
             suggestion=(
-                "Textual reference parsing ships at v1.0. For now, paste the RBI URL "
-                "(BS_ViewMasDirections.aspx?id=... or NotificationUserWithdrawnCircular.aspx?Id=...) "
-                "instead of the reference number."
+                "Textual reference parsing ships at v1.0. For now, paste the RBI URL: "
+                "BS_ViewMasDirections.aspx?id=... for a Master Direction, or "
+                "NotificationUser.aspx?Id=... for a circular (we'll check whether it's "
+                "been withdrawn)."
             ),
             source_url=raw,
         )
@@ -185,8 +200,9 @@ def check_current(conn: sqlite3.Connection, url_or_ref: str) -> dict[str, Any]:
         suggestion=(
             "Unrecognized input. v0.1 supports two URL patterns: "
             "BS_ViewMasDirections.aspx?id=... (Master Directions) and "
-            "NotificationUserWithdrawnCircular.aspx?Id=... (withdrawn circulars). "
-            "Other RBI URL types and textual references ship at v1.0."
+            "NotificationUser.aspx?Id=... (circulars — checked against the "
+            "withdrawn-circulars list). Other RBI URL types and textual "
+            "references ship at v1.0."
         ),
         source_url=raw,
     )

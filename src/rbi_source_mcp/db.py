@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS documents (
     md_id            TEXT NOT NULL UNIQUE,
     title            TEXT NOT NULL,
     detail_url       TEXT NOT NULL,
-    issued_date      TEXT,                -- ISO 8601 if parseable
-    department       TEXT,
+    last_updated_at  TEXT,                -- "Updated as on <date>" parsed from title; ISO 8601
+    department       TEXT,                -- v0.1: always NULL (page is JS-rendered for groupings)
     pdf_urls_json    TEXT NOT NULL DEFAULT '[]',
     status           TEXT NOT NULL DEFAULT 'current'
                        CHECK (status IN ('current', 'withdrawn', 'superseded', 'draft', 'unknown')),
@@ -156,7 +156,7 @@ def upsert_md(
     *,
     title: str,
     detail_url: str,
-    issued_date: str | None,
+    last_updated_at: str | None,
     department: str | None,
     pdf_urls: list[str],
     status: str = "current",
@@ -173,13 +173,13 @@ def upsert_md(
     conn.execute(
         """
         INSERT INTO documents (
-            document_id, md_id, title, detail_url, issued_date, department,
+            document_id, md_id, title, detail_url, last_updated_at, department,
             pdf_urls_json, status, first_seen_at, last_seen_at, raw_list_sha256
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(md_id) DO UPDATE SET
             title = excluded.title,
             detail_url = excluded.detail_url,
-            issued_date = COALESCE(excluded.issued_date, documents.issued_date),
+            last_updated_at = COALESCE(excluded.last_updated_at, documents.last_updated_at),
             department = COALESCE(excluded.department, documents.department),
             pdf_urls_json = excluded.pdf_urls_json,
             status = excluded.status,
@@ -191,7 +191,7 @@ def upsert_md(
             md_id,
             title,
             detail_url,
-            issued_date,
+            last_updated_at,
             department,
             json.dumps(pdf_urls),
             status,

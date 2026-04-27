@@ -44,10 +44,10 @@ Claude Desktop + Cursor (with one-click deeplink) ship at v1.0.
 Paste any RBI URL or `RBI/DOR/...` reference, get back current/withdrawn/superseded plus the replacement document.
 
 **v0.1 supports two URL patterns:**
-- `https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=<MD_ID>`
-- `https://www.rbi.org.in/Scripts/NotificationUserWithdrawnCircular.aspx?id=<NOTIF_ID>`
+- `https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=<MD_ID>` — Master Direction lookup, returns `current` / `unknown`.
+- `https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=<NOTIF_ID>` — circular lookup, returns `withdrawn` (with `withdrawn_date`) if the ID appears in RBI's withdrawn-circulars list, else `not_withdrawn` with a clear caveat that v0.1 only checks withdrawal status, not active-circulars existence.
 
-For unsupported patterns (notification URLs, FAQ URLs, textual `RBI/...` refs): returns a structured `unsupported_at_v0.1` response with a clear reason. **Never silently fails.**
+For unsupported patterns (FAQ URLs, textual `RBI/...` refs, anything else): returns a structured `unsupported_at_v0.1` response with a specific `reason` field. **Never silently fails.**
 
 ### `rbi.search(query, filters?)` — hybrid retrieval
 

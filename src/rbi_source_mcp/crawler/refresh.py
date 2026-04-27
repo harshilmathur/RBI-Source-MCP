@@ -70,7 +70,7 @@ def run() -> int:
                     md.md_id,
                     title=md.title,
                     detail_url=md.detail_url,
-                    issued_date=md.issued_date,
+                    last_updated_at=md.last_updated_at,
                     department=md.department,
                     pdf_urls=md.pdf_urls,
                     status="current",
