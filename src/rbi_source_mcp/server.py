@@ -74,8 +74,15 @@ def _build_server() -> Server:
                         "topic_hint": {
                             "type": "string",
                             "description": (
-                                "Optional topic to bias retrieval. Known values: "
-                                "'payment_aggregator', 'pa', 'pa_pg'. Unknown values are ignored."
+                                "Optional topic to bias retrieval to one MD. Known values: "
+                                "'payment_aggregator' / 'pa' / 'pa_pg' (PA MD), "
+                                "'kyc_bank' (Commercial Banks KYC), 'kyc_nbfc' (NBFC KYC), "
+                                "'kyc' (spans both KYC MDs), "
+                                "'ppi' / 'prepaid' / 'wallet' (Prepaid Instruments MD), "
+                                "'cards' / 'credit_card' / 'debit_card' / 'tokenisation' (Commercial Banks Cards MD), "
+                                "'e_mandate' / 'recurring' (E-mandate Framework), "
+                                "'digital_payment_security' / 'afa' (Digital Payment Security Controls). "
+                                "Unknown values are ignored (search spans full corpus)."
                             ),
                         },
                         "limit": {

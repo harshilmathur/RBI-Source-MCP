@@ -19,10 +19,34 @@ from typing import Any
 
 from ..db import escape_fts5_query, search_chunks_fts
 
-_TOPIC_TO_MD_ID: dict[str, str] = {
+# Topic hint → md_id mapping. Mirrors check_compliance.py; keep them in sync.
+_TOPIC_TO_MD_ID: dict[str, str | None] = {
     "payment_aggregator": "12896",
     "pa": "12896",
     "pa_pg": "12896",
+    "kyc_bank": "13141",
+    "kyc_commercial_bank": "13141",
+    "bank_kyc": "13141",
+    "kyc_nbfc": "12943",
+    "nbfc_kyc": "12943",
+    "ppi": "12156",
+    "prepaid": "12156",
+    "prepaid_payment_instrument": "12156",
+    "wallet": "12156",
+    "cards": "13155",
+    "credit_card": "13155",
+    "debit_card": "13155",
+    "tokenisation": "13155",
+    "tokenization": "13155",
+    "e_mandate": "13374",
+    "emandate": "13374",
+    "recurring": "13374",
+    "recurring_payment": "13374",
+    "digital_payment_security": "12032",
+    "payment_security": "12032",
+    "afa": "12032",
+    "additional_factor_authentication": "12032",
+    "kyc": None,  # ambiguous; spans both bank + NBFC KYC MDs
 }
 
 
