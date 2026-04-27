@@ -8,11 +8,11 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that b
 
 ## Why this exists
 
-Fintech builders scoping a feature ("can I do recurring auto-debit under current RBI rules?") today Google `rbi.org.in`, land on an ASP.NET page that may or may not be a withdrawn circular, copy a paragraph into a PRD, and ship a feature against rules superseded three years ago. The status quo silently fails: no warning when you read withdrawn material, no version awareness, no amendment chain, no reliable citation.
+Fintech builders writing a clause, PRD section, or partner agreement currently ping the compliance team in Slack and wait hours-to-days to know if their language conflicts with a current RBI rule. Or they Google `rbi.org.in`, land on an ASP.NET page that may or may not be a withdrawn circular, and ship against rules superseded three years ago.
 
-RBI Source MCP fixes the silent-failure problem.
+RBI Source MCP collapses this loop. Paste a clause or section into Claude/Cursor with this MCP connected, and Claude returns the relevant RBI Master Direction provisions with citations, paragraph anchors, source URLs, and current/withdrawn status. Retrieval-only by design — this MCP doesn't issue compliance verdicts; the LLM synthesizes from the cited source material, and the user makes the call.
 
-**The visceral demo:** paste a 2017 RBI URL into Claude → `"Withdrawn 2020-06-12 by RBI/DOR/2020/106. Replacement: <new URL>."`
+**The visceral demo:** paste a clause from a draft TOS into Claude → cited paragraphs from the Payment Aggregator Master Direction, with paragraph anchors, the official RBI URL, and the published date. Verify with a human compliance reviewer before shipping.
 
 ## Coverage (planned for v1.0)
 
@@ -37,25 +37,35 @@ When the hosted endpoint goes live, this will be a 2-row install table:
 
 Claude Desktop + Cursor (with one-click deeplink) ship at v1.0.
 
-## Tools (v0.1)
+## Tools (v0.1.5)
 
-### `rbi.check_current(url_or_ref)` — the headline tool
+### `rbi.check_compliance(text, topic_hint?)` — HEADLINE
 
-Paste any RBI URL or `RBI/DOR/...` reference, get back current/withdrawn/superseded plus the replacement document.
+Paste free text (a clause, PRD section, draft policy paragraph, code comment) and get back ranked relevant Master Direction provisions with citations: paragraph anchor, official URL, RBI reference, last-updated date, current/withdrawn status.
 
-**v0.1 supports two URL patterns:**
+**Retrieval-only by design.** The MCP does not issue compliance verdicts. The LLM consuming the tool synthesizes the verdict from cited provisions; the user makes the decision. This separation keeps the MCP defensibly on the source-layer side of the line — we are not an unauthorized regulatory advisor.
+
+`topic_hint` (optional) biases retrieval toward a known topic. Supported v0.1.5: `"payment_aggregator"`, `"pa"`, `"pa_pg"`. Unknown values are ignored.
+
+Out-of-scope inputs (recipes, sports articles, anything unrelated) return `low_confidence: true` so consuming LLMs can decline to synthesize.
+
+### `rbi.search(query, filters?)` — direct retrieval
+
+Same engine `check_compliance` uses, exposed for cleaner keyword queries: "what are the net-worth requirements for PAs". Returns ranked chunks with citations.
+
+v0.1.5 uses FTS5 sparse retrieval. Hybrid (FTS5 + sqlite-vec dense) ships at v0.5.
+
+### `rbi.get_document(document_id, include_text?, as_of?)` — fetch a Master Direction
+
+Returns metadata + table of contents (chunk anchors, sections, page numbers). Pass `include_text=true` to also get the full assembled body. `as_of` reserved for v1.1; ignored at v0.1.5.
+
+### `rbi.check_current(url_or_ref)` — safety/utility tool
+
+Paste an RBI URL and learn whether it's current, withdrawn, or out-of-corpus. Useful for verifying a citation a user already has. **v0.1.5 supports two URL patterns:**
 - `https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=<MD_ID>` — Master Direction lookup, returns `current` / `unknown`.
-- `https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=<NOTIF_ID>` — circular lookup, returns `withdrawn` (with `withdrawn_date`) if the ID appears in RBI's withdrawn-circulars list, else `not_withdrawn` with a clear caveat that v0.1 only checks withdrawal status, not active-circulars existence.
+- `https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=<NOTIF_ID>` — circular lookup, returns `withdrawn` (with `withdrawn_date`) if the ID appears in RBI's withdrawn-circulars list, else `not_withdrawn`.
 
-For unsupported patterns (FAQ URLs, textual `RBI/...` refs, anything else): returns a structured `unsupported_at_v0.1` response with a specific `reason` field. **Never silently fails.**
-
-### `rbi.search(query, filters?)` — hybrid retrieval
-
-Returns chunks from current Master Directions ranked by combined BM25 (FTS5) + dense-vector (sqlite-vec, `bge-small-en-v1.5`) similarity. Filters: `topic`, `regulated_entity`, `include_withdrawn`, `as_of_date`.
-
-### `rbi.get_document(document_id, as_of?)` — full MD fetch
-
-Returns full text + version metadata for a Master Direction. `as_of` accepts ISO date strings; resolves to the version current on that date. Amendment-chain field ships at v1.1.
+For unsupported patterns (FAQ URLs, textual `RBI/...` refs, anything else): returns a structured `unsupported_at_v0.1` response. **Never silently fails.**
 
 ## Architecture (v0.1)
 
@@ -89,23 +99,28 @@ Self-hosters: source-of-truth corpus refresh runs from this repo's GitHub Action
 
 ## Roadmap
 
-**v0.1 — withdrawal sentinel (week 5 milestone):**
-- Crawler for MD list + withdrawn list
-- `check_current` for two URL patterns
-- Hosted endpoint live on Fly
-- Anonymous opt-out telemetry
+**v0.1.5 — single-MD compliance proof (current):**
+- Detail-page crawler + WAF-aware PDF fetcher (rbidocs bot-protection bypass via browser headers + Referer)
+- PDF extraction with quality gate
+- Paragraph chunking with section anchors (137 chunks for the PA MD)
+- FTS5 sparse retrieval over chunks
+- `rbi.check_compliance`, `rbi.search`, `rbi.get_document` working end-to-end
+- Currently indexed: Master Direction on Regulation of Payment Aggregator (PA), id=12896
 
-**v1.0 — full corpus (week 10-12):**
-- PDF extraction + quality gate
-- `search` and `get_document` over all MDs
-- Weekly atomic-swap refresh with smoke tests + 3 regression tests
-- MCP Registry listing
-- Cursor one-click install link
-- Public stats page from telemetry
+**v0.5 — top-10 MDs (next):**
+- Same pipeline scaled to KYC, digital lending, tokenisation, and 7 other high-traffic MDs
+- Dense embeddings (`bge-small-en-v1.5` via sqlite-vec) for hybrid retrieval
+- Eval set of 20 hand-labeled (clause, expected provision) pairs, must hit top-3 at ≥80%
+- Hosted endpoint live on Fly with weekly atomic-swap refresh
+
+**v1.0 — full corpus:**
+- All 342 Master Directions indexed
+- 3 named regression tests gating every refresh
+- MCP Registry listing, Cursor one-click install link, public stats page from telemetry
 
 **v1.1+:**
-- `find_updates` for the change feed
 - Amendment chain extraction
+- `find_updates` for the change feed
 - OCR pipeline for scanned MDs
 - Full URL pattern parsing (notifications, FAQs, textual refs)
 - `/playground` HTML zero-install try-it surface

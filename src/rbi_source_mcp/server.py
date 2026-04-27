@@ -1,10 +1,13 @@
 """MCP server for RBI Source MCP.
 
-Exposes three tools at v0.1:
+Exposes four tools at v0.1.5:
 
-    rbi.check_current(url_or_ref)      -- the headline tool, fully implemented
-    rbi.search(query, filters?)        -- stubbed (returns a "coming in v1.0" envelope)
-    rbi.get_document(document_id, ...) -- stubbed (returns a "coming in v1.0" envelope)
+    rbi.check_compliance(text, topic_hint?) -- HEADLINE: paste a clause/PRD/policy,
+                                               get back ranked relevant RBI provisions
+                                               with citations. Retrieval-only.
+    rbi.search(query, filters?)             -- direct keyword/topic retrieval over MD chunks
+    rbi.get_document(document_id, ...)      -- fetch a Master Direction's metadata + ToC
+    rbi.check_current(url_or_ref)           -- safety/utility: is this URL withdrawn?
 
 Run locally:
     python -m rbi_source_mcp.server
@@ -27,6 +30,9 @@ from mcp.types import TextContent, Tool
 from . import __version__
 from .check_current import check_current
 from .db import connect, init_db
+from .mcp.check_compliance import check_compliance
+from .mcp.get_document import get_document
+from .mcp.search import search
 
 logger = structlog.get_logger(__name__)
 
@@ -45,31 +51,50 @@ def _build_server() -> Server:
     async def list_tools() -> list[Tool]:
         return [
             Tool(
-                name="rbi.check_current",
+                name="rbi.check_compliance",
                 description=(
-                    "Given an RBI URL (Master Directions or withdrawn-circulars page), return whether "
-                    "the document is current, withdrawn, or unknown — plus the replacement reference "
-                    "when known. Two URL patterns supported at v0.1; other RBI URL types and textual "
-                    "references return a structured 'unsupported_at_v0.1' response with a clear reason."
+                    "HEADLINE. Paste free text (a clause, PRD section, draft policy paragraph, "
+                    "code comment) and get back ranked relevant Master Direction provisions with "
+                    "citations — official URL, paragraph anchor, RBI reference, last-updated date, "
+                    "current/withdrawn status. RETRIEVAL-ONLY by design: this tool does NOT issue "
+                    "compliance verdicts. The LLM consuming the tool should synthesize a verdict "
+                    "from the cited provisions and clearly mark it as 'not legal advice'. "
+                    "Always include source URLs and paragraph anchors when summarizing for the user."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "url_or_ref": {
+                        "text": {
                             "type": "string",
-                            "description": "An RBI URL (preferred) or RBI reference number.",
-                        }
+                            "description": (
+                                "The free-text clause/section to check. Typically <2000 chars; "
+                                "split larger documents into sections and call once per section."
+                            ),
+                        },
+                        "topic_hint": {
+                            "type": "string",
+                            "description": (
+                                "Optional topic to bias retrieval. Known values: "
+                                "'payment_aggregator', 'pa', 'pa_pg'. Unknown values are ignored."
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max provisions to return (default 5).",
+                            "default": 5,
+                        },
                     },
-                    "required": ["url_or_ref"],
+                    "required": ["text"],
                     "additionalProperties": False,
                 },
             ),
             Tool(
                 name="rbi.search",
                 description=(
-                    "Hybrid search (FTS5 + sqlite-vec) over RBI Master Direction chunks. "
-                    "Ships at v1.0 once the indexer + PDF extractor land. v0.1 returns a "
-                    "structured 'coming_in_v1.0' response."
+                    "Direct keyword/topic search over Master Direction chunks. Use this when "
+                    "the user has a clean query like 'what are the net-worth requirements for PAs' "
+                    "rather than a clause to compliance-check. Returns ranked chunks with citations. "
+                    "v0.1.5 uses FTS5 sparse retrieval; dense (sqlite-vec) hybrid ships at v0.5."
                 ),
                 inputSchema={
                     "type": "object",
@@ -85,6 +110,7 @@ def _build_server() -> Server:
                             },
                             "additionalProperties": False,
                         },
+                        "limit": {"type": "integer", "default": 5},
                     },
                     "required": ["query"],
                     "additionalProperties": False,
@@ -93,22 +119,51 @@ def _build_server() -> Server:
             Tool(
                 name="rbi.get_document",
                 description=(
-                    "Fetch a Master Direction's full text + version metadata. Ships at v1.0; "
-                    "v0.1 returns a structured 'coming_in_v1.0' response."
+                    "Fetch a Master Direction's metadata + table of contents. Pass include_text=true "
+                    "to also get the full assembled body text. Useful when check_compliance or search "
+                    "surfaces a chunk and the LLM wants more context around it."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "document_id": {
                             "type": "string",
-                            "description": "Canonical document ID like 'rbi:master_direction:12550'.",
+                            "description": "Canonical document ID like 'rbi:master_direction:12896'.",
+                        },
+                        "include_text": {
+                            "type": "boolean",
+                            "description": "If true, include the full assembled body text. Default false.",
+                            "default": False,
                         },
                         "as_of": {
                             "type": "string",
-                            "description": "ISO 8601 date; resolves to the version current on that date.",
+                            "description": (
+                                "ISO 8601 date. Reserved for v1.1; ignored at v0.1.5 (always returns "
+                                "current version)."
+                            ),
                         },
                     },
                     "required": ["document_id"],
+                    "additionalProperties": False,
+                },
+            ),
+            Tool(
+                name="rbi.check_current",
+                description=(
+                    "Safety/utility tool: paste an RBI URL (Master Direction or notification page) "
+                    "and learn whether it's current, withdrawn, or out-of-corpus. Useful for "
+                    "verifying a citation the user already has. Two URL patterns supported at v0.1; "
+                    "other inputs return a structured 'unsupported_at_v0.1' response."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url_or_ref": {
+                            "type": "string",
+                            "description": "An RBI URL (preferred) or RBI reference number.",
+                        }
+                    },
+                    "required": ["url_or_ref"],
                     "additionalProperties": False,
                 },
             ),
@@ -119,47 +174,42 @@ def _build_server() -> Server:
         db_path = _resolve_db_path()
         # Ensure schema exists so the server can start before the first crawl.
         init_db(db_path)
+        args = arguments or {}
 
-        if name == "rbi.check_current":
-            url_or_ref = (arguments or {}).get("url_or_ref", "")
+        if name == "rbi.check_compliance":
             with connect(db_path) as conn:
-                result = check_current(conn, url_or_ref)
+                result = check_compliance(
+                    conn,
+                    args.get("text", ""),
+                    topic_hint=args.get("topic_hint"),
+                    limit=int(args.get("limit", 5)),
+                )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         if name == "rbi.search":
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "status": "coming_in_v1.0",
-                            "message": (
-                                "Hybrid search ships at v1.0 once the PDF extractor and "
-                                "sqlite-vec index land. v0.1 only exposes check_current."
-                            ),
-                            "tool": "rbi.search",
-                        },
-                        indent=2,
-                    ),
+            with connect(db_path) as conn:
+                result = search(
+                    conn,
+                    args.get("query", ""),
+                    filters=args.get("filters") or {},
+                    limit=int(args.get("limit", 5)),
                 )
-            ]
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         if name == "rbi.get_document":
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "status": "coming_in_v1.0",
-                            "message": (
-                                "Full-document fetch ships at v1.0. v0.1 only exposes check_current."
-                            ),
-                            "tool": "rbi.get_document",
-                        },
-                        indent=2,
-                    ),
+            with connect(db_path) as conn:
+                result = get_document(
+                    conn,
+                    args.get("document_id", ""),
+                    include_text=bool(args.get("include_text", False)),
+                    as_of=args.get("as_of"),
                 )
-            ]
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        if name == "rbi.check_current":
+            with connect(db_path) as conn:
+                result = check_current(conn, args.get("url_or_ref", ""))
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         return [
             TextContent(

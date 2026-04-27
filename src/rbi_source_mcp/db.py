@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at        TEXT NOT NULL,
     finished_at       TEXT,
-    source            TEXT NOT NULL,        -- 'md_list' | 'withdrawn_list' | etc.
+    source            TEXT NOT NULL,        -- 'md_list' | 'withdrawn_list' | 'md_detail' | 'pdf_fetch' | etc.
     source_url        TEXT NOT NULL,
     status_code       INTEGER,
     raw_html_sha256   TEXT,
@@ -77,6 +77,63 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
     items_changed     INTEGER,
     items_removed     INTEGER,
     error             TEXT
+);
+
+-- v0.1.5: chunks + FTS5 for compliance retrieval
+CREATE TABLE IF NOT EXISTS chunks (
+    chunk_id         TEXT PRIMARY KEY,        -- e.g., "rbi:md:12896:p:8.2.a"
+    document_id      TEXT NOT NULL,           -- FK to documents.document_id
+    md_id            TEXT NOT NULL,           -- denormalized for fast joins
+    rbi_ref          TEXT,                    -- e.g., "RBI/DPSS/2025-26/141" parsed from PDF header
+    section          TEXT,                    -- e.g., "8" (numeric section)
+    paragraph_anchor TEXT,                    -- e.g., "8.2.a"
+    page             INTEGER,                 -- best-effort page number from pdftotext
+    text             TEXT NOT NULL,
+    text_sha256      TEXT NOT NULL,
+    char_start       INTEGER,                 -- offset in the original extracted text
+    char_end         INTEGER,
+    pdf_url          TEXT,
+    indexed_at       TEXT NOT NULL,
+    FOREIGN KEY (document_id) REFERENCES documents(document_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_md_id ON chunks(md_id);
+
+-- FTS5 contentless-shadow index. We store the actual text in `chunks` and use
+-- FTS5 just for the inverted index. Joining via rowid keeps it fast.
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    text,
+    content='chunks',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+-- Triggers keep FTS5 in sync with chunks. Insert/update/delete must propagate.
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TABLE IF NOT EXISTS pdf_artifacts (
+    pdf_url          TEXT PRIMARY KEY,
+    document_id      TEXT NOT NULL,
+    md_id            TEXT NOT NULL,
+    pdf_sha256       TEXT NOT NULL,
+    text_sha256      TEXT NOT NULL,
+    bytes            INTEGER NOT NULL,
+    page_count       INTEGER,
+    extraction_quality REAL,                  -- pages_with_text / total_pages, 0.0-1.0
+    is_indexed       INTEGER NOT NULL DEFAULT 0,  -- 1 once chunks land
+    fetched_at       TEXT NOT NULL,
+    extracted_at     TEXT,
+    error            TEXT
 );
 """
 
@@ -143,6 +200,84 @@ def find_withdrawn_by_ref(conn: sqlite3.Connection, ref: str) -> sqlite3.Row | N
         (ref,),
     )
     return cur.fetchone()
+
+
+# ---------------------------------------------------------------------------
+# Search (v0.1.5: FTS5 only; v0.5+ adds dense via sqlite-vec)
+# ---------------------------------------------------------------------------
+
+
+def search_chunks_fts(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int = 5,
+    md_id: str | None = None,
+    include_withdrawn: bool = False,
+) -> list[sqlite3.Row]:
+    """FTS5 search over chunks.
+
+    Returns up to `limit` rows ordered by BM25 rank (lower is better).
+    `query` is passed to FTS5 directly; callers should escape user input
+    with `_escape_fts5_query` to avoid syntax errors on punctuation.
+
+    `include_withdrawn` is reserved for when we attach status to chunks via
+    the documents table at query time. v0.1.5 only indexes current MDs, so
+    everything returned is current.
+    """
+    sql = """
+        SELECT
+            c.chunk_id,
+            c.document_id,
+            c.md_id,
+            c.rbi_ref,
+            c.section,
+            c.paragraph_anchor,
+            c.page,
+            c.text,
+            c.pdf_url,
+            d.title          AS document_title,
+            d.detail_url     AS document_url,
+            d.last_updated_at,
+            d.status,
+            bm25(chunks_fts) AS bm25_score
+        FROM chunks_fts
+        JOIN chunks    c ON c.rowid = chunks_fts.rowid
+        LEFT JOIN documents d ON d.document_id = c.document_id
+        WHERE chunks_fts MATCH ?
+    """
+    params: list[object] = [query]
+    if md_id is not None:
+        sql += " AND c.md_id = ?"
+        params.append(md_id)
+    if not include_withdrawn:
+        sql += " AND COALESCE(d.status, 'current') = 'current'"
+    sql += " ORDER BY bm25(chunks_fts) ASC LIMIT ?"
+    params.append(limit)
+    cur = conn.execute(sql, params)
+    return cur.fetchall()
+
+
+def escape_fts5_query(text: str) -> str:
+    """Make user text safe to pass to FTS5's MATCH operator.
+
+    FTS5 has its own query language (AND, OR, NOT, NEAR, etc.); arbitrary
+    text from a clause/PRD will trip syntax errors. Strategy:
+        1. Tokenize on word boundaries.
+        2. Drop tokens that are pure punctuation or empty.
+        3. Quote each remaining token to prevent operator interpretation.
+        4. Join with spaces (implicit AND of phrases by FTS5 default).
+    """
+    import re
+
+    tokens = re.findall(r"\w+", text, flags=re.UNICODE)
+    if not tokens:
+        return '""'  # FTS5 will return zero rows; safer than crashing.
+    # Cap query length to avoid pathological inputs; 32 tokens is plenty for
+    # a clause-level compliance check.
+    tokens = tokens[:32]
+    quoted = [f'"{t}"' for t in tokens]
+    return " OR ".join(quoted)
 
 
 # ---------------------------------------------------------------------------
