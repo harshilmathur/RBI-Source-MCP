@@ -1,0 +1,72 @@
+[project]
+name = "rbi-source-mcp"
+version = "0.1.0-dev"
+description = "An MCP server for RBI Master Directions: version-aware, citation-first, knows what's withdrawn."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Harshil Mathur" },
+]
+keywords = ["mcp", "rbi", "fintech", "regulatory", "compliance", "india"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+
+dependencies = [
+    # MCP server
+    "mcp>=1.0.0",
+    # Crawling
+    "httpx>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    # Storage
+    # NOTE: sqlite-vec is loaded as a SQLite extension; the Python pkg ships the .so/.dylib
+    "sqlite-vec>=0.1.0",
+    # Logging
+    "structlog>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-httpx>=0.30.0",
+    "ruff>=0.6.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+rbi-source-mcp = "rbi_source_mcp.server:main"
+rbi-source-crawl = "rbi_source_mcp.crawler.refresh:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rbi_source_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RET"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
