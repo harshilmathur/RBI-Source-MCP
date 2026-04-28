@@ -122,16 +122,16 @@ def check_compliance(
     #   - Both rankers at rank 1: fusion = 2/61 ≈ 0.0328 (max)
     #   - One ranker at rank 1, other absent: fusion = 1/61 ≈ 0.0164
     #   - Both rankers at rank 5: fusion ≈ 0.0308
-    # Real compliance queries against the 7-MD corpus consistently score
-    # ≥0.025 with at least one ranker contributing strongly. Out-of-scope
-    # inputs (recipes, sports articles) max out at ~0.016 because only one
-    # ranker — usually dense, which always finds *some* semantic neighbor —
-    # places them. We require:
-    #   (a) top fusion >= 0.020, AND
-    #   (b) at least one ranker placed the top result in its top-10
-    # to mark high-confidence.
     #
-    # Sparse-only fallback uses the v0.1.5 BM25 threshold (top score < -5.0).
+    # Real compliance queries against the v0.5 corpus consistently score
+    # ≥0.025 with BOTH rankers contributing (sparse + dense agreeing). Out-
+    # of-scope inputs (recipes, sports articles) score weaker because dense
+    # finds spurious neighbors but sparse does not, OR sparse hits an
+    # unrelated keyword while dense misses entirely. We require:
+    #   (a) top fusion >= 0.022, AND
+    #   (b) BOTH rankers contributed (the top chunk appears in both sparse
+    #       AND dense rankings — the strongest possible signal).
+    # When dense is unavailable, fall back to the v0.1.5 BM25 threshold.
     if not provisions:
         response["low_confidence"] = True
         response["message"] = (
@@ -142,10 +142,10 @@ def check_compliance(
         top = provisions[0]
         if response["retrieval"] == "hybrid":
             top_fusion = top.get("fusion_score") or 0.0
-            sparse_rank = top.get("sparse_rank") or 999
-            dense_rank = top.get("dense_rank") or 999
-            best_rank = min(sparse_rank, dense_rank)
-            if top_fusion < 0.020 or best_rank > 10:
+            sparse_rank = top.get("sparse_rank")
+            dense_rank = top.get("dense_rank")
+            both_rankers_agree = sparse_rank is not None and dense_rank is not None
+            if top_fusion < 0.022 or not both_rankers_agree:
                 response["low_confidence"] = True
         else:
             bm25 = top.get("bm25_score")
