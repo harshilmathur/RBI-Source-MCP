@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -140,11 +141,26 @@ def index_circular(
     title = title_hint or detail.title or f"Circular {rbi_ref or notif_id}"
 
     with connect(db_path) as conn:
-        # Upsert documents row (generic — works for any family).
+        # Upsert documents row. Title preference:
+        #   1. The fresh title we just parsed (title_hint or detail.title) wins
+        #      if it's non-empty and not garbage (date string, header label).
+        #   2. Otherwise fall back to whatever's in the DB.
+        # This is the inverse of the MD-indexer's preservation rule because
+        # for circulars, the list-page title is the AUTHORITATIVE source —
+        # the detail page's H1 is often just "Notifications".
         existing = conn.execute(
             "SELECT title FROM documents WHERE md_id = ?", (notif_id,)
         ).fetchone()
-        kept_title = existing["title"] if existing and existing["title"] else title
+        new_title_is_garbage = (
+            not title
+            or _looks_like_date_or_header(title)
+        )
+        if not new_title_is_garbage:
+            kept_title = title
+        elif existing and existing["title"] and not _looks_like_date_or_header(existing["title"]):
+            kept_title = existing["title"]
+        else:
+            kept_title = title or f"Circular {rbi_ref or notif_id}"
         pdf_urls = [pdf_url_used] if pdf_url_used else []
         if detail.annexure_pdf_urls:
             pdf_urls.extend(detail.annexure_pdf_urls)
@@ -291,6 +307,23 @@ def index_circular(
         source="pdf" if pdf_url_used else "html_body",
     )
     return 0
+
+
+_DATE_TITLE_PATTERN = re.compile(
+    r"^\s*([A-Z][a-z]+\s+\d{1,2},?\s*\d{4}|\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|\d{1,2}/\d{1,2}/\d{4}|\d{1,2}-\d{1,2}-\d{4})\s*$"
+)
+_HEADER_LABELS = {
+    "circular name/title", "subject", "notifications", "circular number", "ref no.",
+}
+
+
+def _looks_like_date_or_header(s: str | None) -> bool:
+    """Heuristic: is this string a date or a column-header label, not a real title?"""
+    if not s:
+        return True
+    if s.lower().strip() in _HEADER_LABELS:
+        return True
+    return bool(_DATE_TITLE_PATTERN.match(s.strip()))
 
 
 def main() -> None:
