@@ -28,6 +28,7 @@ import structlog
 import uvicorn
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -52,6 +53,146 @@ _banner_cache: dict[str, object] = {"data": None, "ts": 0.0}
 # the failure shapes differ (banner returns degraded JSON; health flips 503).
 _HEALTH_TTL_SECONDS = 30.0
 _health_cache: dict[str, object] = {"data": None, "status_code": 200, "ts": 0.0}
+
+# HTTP-level request body cap. The application-layer cap on `text` and
+# `query` (server.MAX_INPUT_LEN = 32_000) is enforced AFTER Starlette has
+# parsed the request body, so an attacker can already burn memory by POSTing
+# multi-MB bodies. 200 KB is plenty for the largest legitimate MCP call
+# (32 KB text + JSON-RPC envelope + a few headers); reject everything bigger
+# at the middleware layer before parsing. Caught by /cso review (#4, 2026-04-29).
+MAX_REQUEST_BODY_BYTES = 200_000
+
+# Per-IP rate limit (fixed window). Public unauthenticated endpoint, no auth,
+# no captcha, single Fly machine — without this, anyone can DoS or
+# cost-amplify the embedder. 60 requests per 60 seconds per IP is generous
+# for legitimate MCP clients (which batch tool calls in conversation), tight
+# enough to make a tight-loop attacker visible. /health and / are excluded
+# (Fly probes hit /health every 30s; banner is curl-friendly). Caught by
+# /cso review (#2, 2026-04-29).
+RATE_LIMIT_PER_WINDOW = 60
+RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+
+class MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    """Reject requests with Content-Length above the cap before the body is
+    parsed. Two paths:
+
+    1. `Content-Length` header present → check it directly. Cheap, common.
+    2. No `Content-Length` (chunked Transfer-Encoding, etc.) → consume the
+       stream up to the cap; if it exceeds, abort. Slightly more complex.
+
+    For our MCP traffic, all clients send Content-Length (it's a JSON-RPC
+    POST with a known body), so path 1 covers ~all cases. Path 2 is a
+    safety net.
+    """
+
+    def __init__(self, app, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> None:  # noqa: ANN001
+        super().__init__(app)
+        self.max_bytes = max_bytes
+
+    async def dispatch(self, request: Request, call_next):  # noqa: ANN001
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > self.max_bytes:
+                    return JSONResponse(
+                        {
+                            "error": "request_too_large",
+                            "max_bytes": self.max_bytes,
+                            "received_content_length": int(cl),
+                        },
+                        status_code=413,
+                    )
+            except ValueError:
+                # Malformed Content-Length — let the handler reject it.
+                pass
+        return await call_next(request)
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Per-IP fixed-window rate limit. In-memory only — fine on a
+    single-machine Fly deployment. If we ever scale to >1 machine, swap to
+    a Redis-backed limiter (or push the rate-limit decision to Cloudflare).
+
+    Excludes `/health` (Fly probes every 30s) and `/` (banner is curl-friendly
+    and should not count against a user's MCP quota).
+
+    Real client IP is taken from the `Fly-Client-IP` header when present
+    (Fly sets this; Cloudflare also forwards via `CF-Connecting-IP`), else
+    falls back to the request's peer address. The order matters: behind
+    CF→Fly, the chain is Client → CF → Fly → us, so CF-Connecting-IP is
+    the real client. If we drop CF, Fly-Client-IP becomes authoritative.
+    """
+
+    def __init__(
+        self,
+        app,  # noqa: ANN001
+        *,
+        limit: int = RATE_LIMIT_PER_WINDOW,
+        window_s: float = RATE_LIMIT_WINDOW_SECONDS,
+        excluded_paths: tuple[str, ...] = ("/health", "/"),
+    ) -> None:
+        super().__init__(app)
+        self.limit = limit
+        self.window_s = window_s
+        self.excluded_paths = excluded_paths
+        # Map ip -> (window_start_ts, count). Periodically pruned in dispatch.
+        self._buckets: dict[str, tuple[float, int]] = {}
+        self._last_prune = time.time()
+
+    def _client_ip(self, request: Request) -> str:
+        for header in ("cf-connecting-ip", "fly-client-ip", "x-forwarded-for"):
+            v = request.headers.get(header)
+            if v:
+                # X-Forwarded-For may be a comma-separated chain; first hop wins.
+                return v.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    async def dispatch(self, request: Request, call_next):  # noqa: ANN001
+        # Exempt liveness probes and the curl-friendly banner.
+        if request.url.path in self.excluded_paths or any(
+            request.url.path.startswith(p) for p in ("/health",)
+        ):
+            return await call_next(request)
+
+        ip = self._client_ip(request)
+        now = time.time()
+
+        # Periodic prune (every ~window) to bound memory under churn.
+        if now - self._last_prune > self.window_s:
+            cutoff = now - self.window_s
+            self._buckets = {
+                k: v for k, v in self._buckets.items() if v[0] > cutoff
+            }
+            self._last_prune = now
+
+        window_start, count = self._buckets.get(ip, (now, 0))
+        if now - window_start >= self.window_s:
+            window_start = now
+            count = 0
+        count += 1
+        self._buckets[ip] = (window_start, count)
+
+        if count > self.limit:
+            retry_after = max(1, int(self.window_s - (now - window_start)))
+            logger.warning(
+                "rate_limit.exceeded",
+                ip=ip,
+                count=count,
+                limit=self.limit,
+                window_s=self.window_s,
+            )
+            return JSONResponse(
+                {
+                    "error": "rate_limit_exceeded",
+                    "limit": self.limit,
+                    "window_seconds": self.window_s,
+                    "retry_after_seconds": retry_after,
+                },
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        return await call_next(request)
 
 
 def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> Starlette:
@@ -246,8 +387,12 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         lifespan=lifespan,
     )
 
-    # Permissive CORS for the public MCP endpoint. Required for browser-based
-    # MCP clients (e.g., Claude.ai connecting from a different origin).
+    # Middleware order (Starlette runs these in REVERSE order of add_middleware
+    # — last added = outermost = runs first). We want:
+    #   1. Body-size cap   (outermost — reject huge bodies before any work)
+    #   2. Rate limit      (next — drop floods cheaply)
+    #   3. CORS            (innermost — sets headers on the actual response)
+    # So we add them in opposite order:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -255,6 +400,8 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         allow_headers=["*"],
         expose_headers=["mcp-session-id"],
     )
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(MaxBodySizeMiddleware)
     return app
 
 

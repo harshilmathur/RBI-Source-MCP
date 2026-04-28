@@ -17,6 +17,7 @@ The server reads the corpus DB from $RBI_SOURCE_DB (defaults to ./data/db.sqlite
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -131,6 +132,43 @@ def _error_response(tool_name: str, reason: str, exc: BaseException) -> TextCont
         }
     )
     return TextContent(type="text", text=json.dumps(payload, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Sync thread-target helpers for asyncio.to_thread.
+#
+# Each helper opens its own SQLite connection (sqlite3 connections are NOT
+# safe to share across threads with check_same_thread=True, which is the
+# default) and runs the synchronous tool implementation. The async dispatch
+# in `call_tool` schedules these via `asyncio.to_thread`, so the event loop
+# stays responsive while sentence-transformers' `model.encode()` runs.
+# ---------------------------------------------------------------------------
+
+
+def _run_check_compliance(
+    db_path: Path, text: str, topic_hint: str | None, limit: int
+) -> dict[str, Any]:
+    with connect(db_path) as conn:
+        return check_compliance(conn, text, topic_hint=topic_hint, limit=limit)
+
+
+def _run_search(
+    db_path: Path, query: str, filters: dict[str, Any], limit: int
+) -> dict[str, Any]:
+    with connect(db_path) as conn:
+        return search(conn, query, filters=filters, limit=limit)
+
+
+def _run_get_document(
+    db_path: Path, document_id: str, include_text: bool, as_of: str | None
+) -> dict[str, Any]:
+    with connect(db_path) as conn:
+        return get_document(conn, document_id, include_text=include_text, as_of=as_of)
+
+
+def _run_check_current(db_path: Path, url_or_ref: str) -> dict[str, Any]:
+    with connect(db_path) as conn:
+        return check_current(conn, url_or_ref)
 
 
 def _build_server() -> Server:
@@ -291,18 +329,25 @@ def _build_server() -> Server:
             return [_error_response(name, "db_unavailable", exc)]
         args = arguments or {}
 
+        # Each tool branch wraps its synchronous DB + embedder work in
+        # asyncio.to_thread so the event loop is NOT blocked while
+        # sentence-transformers runs model.encode() (CPU-bound, ~50-200ms
+        # per call on shared-cpu-1x). Without this wrap, a single client
+        # at modest concurrency could brown out the entire server. See
+        # /cso security review finding #1 (2026-04-29).
+
         if name == "rbi.check_compliance":
             text = args.get("text", "") or ""
             if len(text) > MAX_INPUT_LEN:
                 return [_input_too_large_response(name, "text", len(text))]
             try:
-                with connect(db_path) as conn:
-                    result = check_compliance(
-                        conn,
-                        text,
-                        topic_hint=args.get("topic_hint"),
-                        limit=int(args.get("limit", 5)),
-                    )
+                result = await asyncio.to_thread(
+                    _run_check_compliance,
+                    db_path,
+                    text,
+                    args.get("topic_hint"),
+                    int(args.get("limit", 5)),
+                )
             except Exception as exc:  # noqa: BLE001
                 return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
@@ -312,34 +357,37 @@ def _build_server() -> Server:
             if len(query) > MAX_INPUT_LEN:
                 return [_input_too_large_response(name, "query", len(query))]
             try:
-                with connect(db_path) as conn:
-                    result = search(
-                        conn,
-                        query,
-                        filters=args.get("filters") or {},
-                        limit=int(args.get("limit", 5)),
-                    )
+                result = await asyncio.to_thread(
+                    _run_search,
+                    db_path,
+                    query,
+                    args.get("filters") or {},
+                    int(args.get("limit", 5)),
+                )
             except Exception as exc:  # noqa: BLE001
                 return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         if name == "rbi.get_document":
             try:
-                with connect(db_path) as conn:
-                    result = get_document(
-                        conn,
-                        args.get("document_id", ""),
-                        include_text=bool(args.get("include_text", False)),
-                        as_of=args.get("as_of"),
-                    )
+                result = await asyncio.to_thread(
+                    _run_get_document,
+                    db_path,
+                    args.get("document_id", ""),
+                    bool(args.get("include_text", False)),
+                    args.get("as_of"),
+                )
             except Exception as exc:  # noqa: BLE001
                 return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         if name == "rbi.check_current":
             try:
-                with connect(db_path) as conn:
-                    result = check_current(conn, args.get("url_or_ref", ""))
+                result = await asyncio.to_thread(
+                    _run_check_current,
+                    db_path,
+                    args.get("url_or_ref", ""),
+                )
             except Exception as exc:  # noqa: BLE001
                 return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]

@@ -14,7 +14,18 @@ RUN apt-get update \
         sqlite3 \
         ca-certificates \
         curl \
+        gosu \
     && rm -rf /var/lib/apt/lists/*
+
+# Non-root runtime user. /cso review (#3, 2026-04-29) flagged the production
+# Dockerfile for missing USER. Fly's Firecracker VM is the outer isolation
+# boundary, but defense-in-depth says the in-container process should not
+# be UID 0 — that way a future RCE finding can't immediately persist by
+# corrupting /app or /data. We DON'T set USER here in the Dockerfile
+# because the entrypoint shim needs to run as root briefly to chown the
+# Fly volume mount at /data (which mounts root:root by default). The shim
+# does `exec gosu rbi "$@"` to drop privileges after the chown.
+RUN useradd --system --uid 1001 --gid 0 --shell /usr/sbin/nologin --home-dir /app rbi
 
 WORKDIR /app
 
@@ -43,17 +54,37 @@ EXPOSE 8080
 # refresh GitHub Action, the COPY below can be dropped from this
 # Dockerfile to reclaim the ~170 MB image bloat.
 COPY db.sqlite.initial /app/initial-db.sqlite
+# Entrypoint shim runs once per machine boot:
+#   1. (root path) ensure /data is owned by the rbi user — Fly volumes mount
+#      root:root by default, so the non-root runtime can't write without this.
+#   2. (root path) seed /data/db.sqlite from /app/initial-db.sqlite if the
+#      volume is empty (idempotent — no-op on subsequent boots).
+#   3. exec the actual command under the rbi user via gosu, dropping all
+#      root capabilities for the running server process.
+# If somehow we're already running non-root (e.g., `docker run --user 1001`),
+# the shim skips chown/seed and just execs — caller is on their own to ensure
+# /data is writable.
 RUN printf '%s\n' \
         '#!/bin/sh' \
         'set -e' \
-        'if [ ! -f "$RBI_SOURCE_DB" ] && [ -f /app/initial-db.sqlite ]; then' \
-        '  echo "[bootstrap] seeding $RBI_SOURCE_DB from baked corpus"' \
+        'if [ "$(id -u)" = "0" ]; then' \
         '  mkdir -p "$(dirname "$RBI_SOURCE_DB")"' \
-        '  cp /app/initial-db.sqlite "$RBI_SOURCE_DB"' \
+        '  chown -R rbi:root /data 2>/dev/null || true' \
+        '  if [ ! -f "$RBI_SOURCE_DB" ] && [ -f /app/initial-db.sqlite ]; then' \
+        '    echo "[bootstrap] seeding $RBI_SOURCE_DB from baked corpus"' \
+        '    cp /app/initial-db.sqlite "$RBI_SOURCE_DB"' \
+        '    chown rbi:root "$RBI_SOURCE_DB"' \
+        '  fi' \
+        '  exec gosu rbi "$@"' \
+        'else' \
+        '  if [ ! -f "$RBI_SOURCE_DB" ] && [ -f /app/initial-db.sqlite ]; then' \
+        '    cp /app/initial-db.sqlite "$RBI_SOURCE_DB"' \
+        '  fi' \
+        '  exec "$@"' \
         'fi' \
-        'exec "$@"' \
         > /app/entrypoint.sh \
-    && chmod +x /app/entrypoint.sh
+    && chmod +x /app/entrypoint.sh \
+    && chown -R rbi:root /app
 
 # Default container entrypoint: streamable-HTTP transport.
 # The stdio entrypoint (rbi-source-mcp) is still installed in the image; for
