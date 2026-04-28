@@ -113,6 +113,36 @@ def run(
         if sleep_between > 0 and i < len(targets):
             time.sleep(sleep_between)
 
+    # Retry pass: rbi.org.in occasionally returns 504 Gateway Timeout under
+    # load. These are transient — retrying after a short cooldown almost
+    # always succeeds. We do ONE retry per failed MD with a longer sleep.
+    if result.failed:
+        retry_targets = [md_id for md_id, _ in result.failed]
+        logger.info(
+            "bulk_index.retry_start",
+            count=len(retry_targets),
+            cooldown_seconds=15,
+        )
+        time.sleep(15.0)
+        new_failed: list[tuple[str, str]] = []
+        for j, md_id in enumerate(retry_targets, start=1):
+            logger.info(
+                "bulk_index.retry",
+                md_id=md_id,
+                progress=f"[{j}/{len(retry_targets)}]",
+            )
+            try:
+                exit_code = index_md(md_id, db_path=db_path, pdf_dir=pdf_dir)
+                if exit_code == 0:
+                    result.success.append(md_id)
+                else:
+                    new_failed.append((md_id, f"retry: index_md exit={exit_code}"))
+            except Exception as exc:  # noqa: BLE001
+                new_failed.append((md_id, f"retry: {type(exc).__name__}: {exc}"))
+            if sleep_between > 0 and j < len(retry_targets):
+                time.sleep(sleep_between)
+        result.failed = new_failed
+
     elapsed = result.elapsed()
     logger.info(
         "bulk_index.done",
