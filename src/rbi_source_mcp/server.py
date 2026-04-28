@@ -59,6 +59,37 @@ def _wrap_response(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _error_response(tool_name: str, reason: str, exc: BaseException) -> TextContent:
+    """Build a wrapped error envelope for a tool dispatch that raised.
+
+    The disclaimer fields STILL appear at the top — the legal posture must
+    be preserved on the error path too. We log the real exception locally
+    via structlog, but the public response only carries the exception class
+    name (no traceback, no internal paths) to avoid leaking internals.
+    """
+    logger.error(
+        "tool.dispatch.error",
+        tool=tool_name,
+        reason=reason,
+        error=str(exc),
+        exc_type=type(exc).__name__,
+    )
+    payload = _wrap_response(
+        {
+            "status": "error",
+            "reason": reason,
+            "tool": tool_name,
+            "error_class": type(exc).__name__,
+            "message": (
+                "An internal error occurred while serving this tool. The error "
+                "has been logged. Re-try the call; if the failure persists, "
+                "open an issue at https://github.com/harshilmathur/RBI-Source-MCP."
+            ),
+        }
+    )
+    return TextContent(type="text", text=json.dumps(payload, indent=2))
+
+
 def _build_server() -> Server:
     """Build the MCP Server instance and register tool handlers."""
     server: Server = Server("rbi-source-mcp")
@@ -203,44 +234,65 @@ def _build_server() -> Server:
 
     @server.call_tool()  # type: ignore[no-untyped-call,misc]
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+        # Each branch is wrapped in try/except so unexpected exceptions
+        # (sqlite OperationalError, embedder OOM, model load failure, etc.)
+        # are returned as a structured `_wrap_response`-wrapped error rather
+        # than escaping to the MCP SDK which returns its OWN error envelope
+        # without our disclaimer fields. The legal-posture contract is that
+        # EVERY tool response carries `_disclaimer` + `_llm_instruction`,
+        # including failures. Don't let an exception break that.
         db_path = _resolve_db_path()
-        # Ensure schema exists so the server can start before the first crawl.
-        init_db(db_path)
+        try:
+            init_db(db_path)
+        except Exception as exc:  # noqa: BLE001
+            return [_error_response(name, "db_unavailable", exc)]
         args = arguments or {}
 
         if name == "rbi.check_compliance":
-            with connect(db_path) as conn:
-                result = check_compliance(
-                    conn,
-                    args.get("text", ""),
-                    topic_hint=args.get("topic_hint"),
-                    limit=int(args.get("limit", 5)),
-                )
+            try:
+                with connect(db_path) as conn:
+                    result = check_compliance(
+                        conn,
+                        args.get("text", ""),
+                        topic_hint=args.get("topic_hint"),
+                        limit=int(args.get("limit", 5)),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         if name == "rbi.search":
-            with connect(db_path) as conn:
-                result = search(
-                    conn,
-                    args.get("query", ""),
-                    filters=args.get("filters") or {},
-                    limit=int(args.get("limit", 5)),
-                )
+            try:
+                with connect(db_path) as conn:
+                    result = search(
+                        conn,
+                        args.get("query", ""),
+                        filters=args.get("filters") or {},
+                        limit=int(args.get("limit", 5)),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         if name == "rbi.get_document":
-            with connect(db_path) as conn:
-                result = get_document(
-                    conn,
-                    args.get("document_id", ""),
-                    include_text=bool(args.get("include_text", False)),
-                    as_of=args.get("as_of"),
-                )
+            try:
+                with connect(db_path) as conn:
+                    result = get_document(
+                        conn,
+                        args.get("document_id", ""),
+                        include_text=bool(args.get("include_text", False)),
+                        as_of=args.get("as_of"),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         if name == "rbi.check_current":
-            with connect(db_path) as conn:
-                result = check_current(conn, args.get("url_or_ref", ""))
+            try:
+                with connect(db_path) as conn:
+                    result = check_current(conn, args.get("url_or_ref", ""))
+            except Exception as exc:  # noqa: BLE001
+                return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         return [
