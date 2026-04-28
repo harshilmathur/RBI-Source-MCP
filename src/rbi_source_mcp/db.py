@@ -29,6 +29,18 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
+VALID_FAMILIES: frozenset[str] = frozenset(
+    {
+        "master_direction",
+        "standalone_circular",
+        "notification",
+        "master_circular",
+        "press_release",
+        "faq",
+    }
+)
+
+
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     """Load the sqlite-vec extension on a connection.
 
@@ -68,8 +80,11 @@ CREATE TABLE IF NOT EXISTS documents (
     issued_date      TEXT,                -- ISO 8601 date when the document was issued (from list page or PDF body)
     rbi_ref          TEXT,                -- RBI reference number (e.g., "DOR.AML.REC.61/14.06.001/2025-26")
     department       TEXT,                -- v0.1: always NULL for MDs (page is JS-rendered for groupings)
-    document_family  TEXT NOT NULL DEFAULT 'master_direction'
-                       CHECK (document_family IN ('master_direction', 'standalone_circular', 'notification', 'master_circular')),
+    document_family  TEXT NOT NULL DEFAULT 'master_direction',
+    -- valid families validated at the application layer (db.py: VALID_FAMILIES).
+    -- We deliberately don't use a CHECK constraint because SQLite can't ALTER
+    -- a CHECK without a table rebuild, and we want to be able to add new
+    -- families without an offline migration on every deployed corpus.
     pdf_urls_json    TEXT NOT NULL DEFAULT '[]',
     status           TEXT NOT NULL DEFAULT 'current'
                        CHECK (status IN ('current', 'withdrawn', 'superseded', 'draft', 'unknown')),
@@ -239,6 +254,62 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
 
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_family ON documents(document_family)")
+
+    # Migration v2: drop the old CHECK constraint on document_family.
+    # We started without a CHECK; added one in commit 00e01c7 with 4 families;
+    # extended to 6 families; then realized SQLite can't ALTER a CHECK without
+    # a table rebuild and we don't want a CHECK at all (app-layer validation
+    # via db.VALID_FAMILIES is enough). This migration detects the legacy
+    # CHECK and rebuilds the table without it. Idempotent: no-op if the
+    # CHECK is already gone.
+    schema_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'"
+    ).fetchone()
+    if schema_sql and "CHECK (document_family" in (schema_sql[0] or ""):
+        logger.info("schema.migrate.rebuild_documents_drop_check")
+        try:
+            conn.executescript(
+                """
+                BEGIN;
+                CREATE TABLE documents_new (
+                    document_id      TEXT PRIMARY KEY,
+                    md_id            TEXT NOT NULL UNIQUE,
+                    title            TEXT NOT NULL,
+                    detail_url       TEXT NOT NULL,
+                    last_updated_at  TEXT,
+                    issued_date      TEXT,
+                    rbi_ref          TEXT,
+                    department       TEXT,
+                    document_family  TEXT NOT NULL DEFAULT 'master_direction',
+                    pdf_urls_json    TEXT NOT NULL DEFAULT '[]',
+                    status           TEXT NOT NULL DEFAULT 'current'
+                                       CHECK (status IN ('current', 'withdrawn', 'superseded', 'draft', 'unknown')),
+                    first_seen_at    TEXT NOT NULL,
+                    last_seen_at     TEXT NOT NULL,
+                    raw_list_sha256  TEXT
+                );
+                INSERT INTO documents_new (
+                    document_id, md_id, title, detail_url, last_updated_at,
+                    issued_date, rbi_ref, department, document_family, pdf_urls_json,
+                    status, first_seen_at, last_seen_at, raw_list_sha256
+                )
+                SELECT
+                    document_id, md_id, title, detail_url, last_updated_at,
+                    issued_date, rbi_ref, department, document_family, pdf_urls_json,
+                    status, first_seen_at, last_seen_at, raw_list_sha256
+                FROM documents;
+                DROP TABLE documents;
+                ALTER TABLE documents_new RENAME TO documents;
+                CREATE INDEX IF NOT EXISTS idx_documents_md_id ON documents(md_id);
+                CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+                CREATE INDEX IF NOT EXISTS idx_documents_family ON documents(document_family);
+                COMMIT;
+                """
+            )
+        except sqlite3.OperationalError as exc:
+            logger.error("schema.migrate.rebuild_failed", error=str(exc))
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute("ROLLBACK")
 
 
 def init_db(db_path: str | Path) -> None:
