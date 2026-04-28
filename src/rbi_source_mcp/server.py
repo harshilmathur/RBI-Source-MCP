@@ -30,6 +30,7 @@ from mcp.types import TextContent, Tool
 from . import __version__
 from .check_current import check_current
 from .db import connect, init_db
+from .disclaimer import DISCLAIMER, LLM_INSTRUCTION
 from .mcp.check_compliance import check_compliance
 from .mcp.get_document import get_document
 from .mcp.search import search
@@ -41,6 +42,21 @@ DEFAULT_DB_PATH = "./data/db.sqlite"
 
 def _resolve_db_path() -> Path:
     return Path(os.environ.get("RBI_SOURCE_DB", DEFAULT_DB_PATH)).expanduser().resolve()
+
+
+def _wrap_response(payload: dict[str, Any]) -> dict[str, Any]:
+    """Inject the disclaimer + LLM instruction into every tool response.
+
+    Order matters: the disclaimer fields are placed at the TOP of the JSON
+    object (before result fields) so an LLM streaming the response or
+    truncating tail content still sees them. Also, by appearing first, they
+    survive partial-response summarization more reliably than a footer would.
+    """
+    return {
+        "_disclaimer": DISCLAIMER,
+        "_llm_instruction": LLM_INSTRUCTION,
+        **payload,
+    }
 
 
 def _build_server() -> Server:
@@ -59,7 +75,10 @@ def _build_server() -> Server:
                     "current/withdrawn status. RETRIEVAL-ONLY by design: this tool does NOT issue "
                     "compliance verdicts. The LLM consuming the tool should synthesize a verdict "
                     "from the cited provisions and clearly mark it as 'not legal advice'. "
-                    "Always include source URLs and paragraph anchors when summarizing for the user."
+                    "Always include source URLs and paragraph anchors when summarizing for the user. "
+                    "REQUIRED: every response includes a `_disclaimer` field; you MUST surface that "
+                    "disclaimer (verbatim or paraphrased preserving all four points) when presenting "
+                    "results to the user. Do not omit it."
                 ),
                 inputSchema={
                     "type": "object",
@@ -101,7 +120,9 @@ def _build_server() -> Server:
                     "Direct keyword/topic search over Master Direction chunks. Use this when "
                     "the user has a clean query like 'what are the net-worth requirements for PAs' "
                     "rather than a clause to compliance-check. Returns ranked chunks with citations. "
-                    "v0.1.5 uses FTS5 sparse retrieval; dense (sqlite-vec) hybrid ships at v0.5."
+                    "v0.5 uses hybrid retrieval (FTS5 + sqlite-vec dense, RRF fused). "
+                    "REQUIRED: every response includes a `_disclaimer` field; you MUST surface it "
+                    "when presenting results to the user."
                 ),
                 inputSchema={
                     "type": "object",
@@ -128,7 +149,9 @@ def _build_server() -> Server:
                 description=(
                     "Fetch a Master Direction's metadata + table of contents. Pass include_text=true "
                     "to also get the full assembled body text. Useful when check_compliance or search "
-                    "surfaces a chunk and the LLM wants more context around it."
+                    "surfaces a chunk and the LLM wants more context around it. "
+                    "REQUIRED: every response includes a `_disclaimer` field; you MUST surface it "
+                    "when presenting results to the user."
                 ),
                 inputSchema={
                     "type": "object",
@@ -160,7 +183,9 @@ def _build_server() -> Server:
                     "Safety/utility tool: paste an RBI URL (Master Direction or notification page) "
                     "and learn whether it's current, withdrawn, or out-of-corpus. Useful for "
                     "verifying a citation the user already has. Two URL patterns supported at v0.1; "
-                    "other inputs return a structured 'unsupported_at_v0.1' response."
+                    "other inputs return a structured 'unsupported_at_v0.1' response. "
+                    "REQUIRED: every response includes a `_disclaimer` field; you MUST surface it "
+                    "when presenting results to the user."
                 ),
                 inputSchema={
                     "type": "object",
@@ -191,7 +216,7 @@ def _build_server() -> Server:
                     topic_hint=args.get("topic_hint"),
                     limit=int(args.get("limit", 5)),
                 )
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         if name == "rbi.search":
             with connect(db_path) as conn:
@@ -201,7 +226,7 @@ def _build_server() -> Server:
                     filters=args.get("filters") or {},
                     limit=int(args.get("limit", 5)),
                 )
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         if name == "rbi.get_document":
             with connect(db_path) as conn:
@@ -211,22 +236,24 @@ def _build_server() -> Server:
                     include_text=bool(args.get("include_text", False)),
                     as_of=args.get("as_of"),
                 )
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         if name == "rbi.check_current":
             with connect(db_path) as conn:
                 result = check_current(conn, args.get("url_or_ref", ""))
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         return [
             TextContent(
                 type="text",
                 text=json.dumps(
-                    {
-                        "status": "error",
-                        "reason": "unknown_tool",
-                        "tool": name,
-                    },
+                    _wrap_response(
+                        {
+                            "status": "error",
+                            "reason": "unknown_tool",
+                            "tool": name,
+                        }
+                    ),
                     indent=2,
                 ),
             )
