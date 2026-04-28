@@ -150,10 +150,18 @@ All scripts use `RBI_SOURCE_DB` env var (defaults to `./data/db.sqlite`).
 ## Testing
 
 ```bash
-uv run pytest -q                 # 77 tests, all passing
+uv run pytest -q                 # 82 unit tests
 uv run ruff check src/ tests/    # lint, must be clean
 uv run rbi-source-eval           # corpus quality gate (must pass at ≥80%)
+uv run python scripts/integration_test_public.py    # 37 end-to-end cases against the live public endpoint
 ```
+
+The integration script hits `https://rbi-source.harshil.ai/mcp/` over real
+HTTPS and exercises every tool, every documented topic hint, error envelopes,
+security middlewares, and the HTTP transport layer. Pacing is 0.8s/call so
+the rate-limit case at the end isn't poisoned by earlier traffic. Run it
+after every deploy to catch regressions on the public surface. JSON reports
+land in `.gstack/integration-reports/`.
 
 The eval is the canonical regression test — if it drops below 80%, retrieval
 quality has regressed and the build should fail. Currently 100% (25/25).
