@@ -221,9 +221,17 @@ def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
                 conn.execute(CHUNKS_VEC_SCHEMA_SQL)
             except sqlite3.OperationalError as exc:
                 logger.warning("chunks_vec.create_fail", error=str(exc))
-        yield conn
+        try:
+            yield conn
+        except Exception:
+            # Rollback on exception so partial writes don't get committed by
+            # the finally block. Re-raise after rollback so callers (and
+            # bulk-indexer retry logic) see the original failure.
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
     finally:
-        conn.commit()
         conn.close()
 
 

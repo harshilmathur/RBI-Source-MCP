@@ -21,6 +21,7 @@ import argparse
 import contextlib
 import os
 import sys
+import time
 from collections.abc import AsyncIterator
 
 import structlog
@@ -36,6 +37,12 @@ from . import __version__
 from .server import _build_server
 
 logger = structlog.get_logger(__name__)
+
+# Banner cache: stats only change on weekly refresh, so a 60-second TTL is
+# fine. Without this, every GET / opens a fresh SQLite connection (with
+# schema migration + extension load) — wasteful and trivially DOSable.
+_BANNER_TTL_SECONDS = 60.0
+_banner_cache: dict[str, object] = {"data": None, "ts": 0.0}
 
 
 def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> Starlette:
@@ -75,7 +82,18 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         return JSONResponse({"status": "ok", "version": __version__})
 
     async def banner(_: Request) -> JSONResponse:
-        """Friendly landing for `curl <HOSTED_URL>/`. Surfaces corpus stats."""
+        """Friendly landing for `curl <HOSTED_URL>/`. Surfaces corpus stats.
+
+        Cached for 60s so /, the most curl-able endpoint, doesn't spawn a
+        fresh SQLite connection + schema migration + sqlite-vec extension
+        load on every hit.
+        """
+        now = time.time()
+        cached = _banner_cache["data"]
+        cached_ts = float(_banner_cache["ts"])  # type: ignore[arg-type]
+        if cached is not None and (now - cached_ts) < _BANNER_TTL_SECONDS:
+            return JSONResponse(cached)  # type: ignore[arg-type]
+
         from .db import connect
 
         db_path = os.environ.get("RBI_SOURCE_DB", "./data/db.sqlite")
@@ -92,12 +110,14 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
                 total_docs = sum(families.values())
                 total_chunks = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
         except Exception as exc:  # noqa: BLE001
+            # Log the real exception locally; return a generic message to the
+            # public client (no internal paths or stack details leaked).
+            logger.warning("banner.corpus_unavailable", error=str(exc), exc_type=type(exc).__name__)
             return JSONResponse(
                 {
                     "name": "rbi-source-mcp",
                     "version": __version__,
                     "status": "corpus_unavailable",
-                    "error": str(exc),
                     "endpoints": {
                         "mcp": "/mcp",
                         "health": "/health",
@@ -105,34 +125,35 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
                 }
             )
 
-        return JSONResponse(
-            {
-                "name": "rbi-source-mcp",
-                "version": __version__,
-                "tagline": "RBI source-grounded retrieval, citation-first, retrieval-only.",
-                "endpoints": {
-                    "mcp": "/mcp  (use this URL with your MCP client)",
-                    "health": "/health",
-                },
-                "corpus": {
-                    "total_documents": total_docs,
-                    "total_chunks": total_chunks,
-                    "by_family": families,
-                },
-                "client_install": {
-                    "claude_code": "claude mcp add rbi-source --transport http <THIS_URL>/mcp",
-                    "claude_ai": "Settings > Connectors > Add Integration > paste <THIS_URL>/mcp",
-                },
-                "disclaimer": (
-                    "Unofficial open-source tool. Not affiliated with the Reserve "
-                    "Bank of India. Returns source-grounded retrieval; does not "
-                    "issue legal opinions. Verify every citation with a qualified "
-                    "compliance reviewer before acting."
-                ),
-                "license": "Apache-2.0",
-                "source": "https://github.com/harshilmathur/RBI-Source-MCP",
-            }
-        )
+        payload = {
+            "name": "rbi-source-mcp",
+            "version": __version__,
+            "tagline": "RBI source-grounded retrieval, citation-first, retrieval-only.",
+            "endpoints": {
+                "mcp": "/mcp  (use this URL with your MCP client)",
+                "health": "/health",
+            },
+            "corpus": {
+                "total_documents": total_docs,
+                "total_chunks": total_chunks,
+                "by_family": families,
+            },
+            "client_install": {
+                "claude_code": "claude mcp add rbi-source --transport http <THIS_URL>/mcp",
+                "claude_ai": "Settings > Connectors > Add Integration > paste <THIS_URL>/mcp",
+            },
+            "disclaimer": (
+                "Unofficial open-source tool. Not affiliated with the Reserve "
+                "Bank of India. Returns source-grounded retrieval; does not "
+                "issue legal opinions. Verify every citation with a qualified "
+                "compliance reviewer before acting."
+            ),
+            "license": "Apache-2.0",
+            "source": "https://github.com/harshilmathur/RBI-Source-MCP",
+        }
+        _banner_cache["data"] = payload
+        _banner_cache["ts"] = now
+        return JSONResponse(payload)
 
     app = Starlette(
         debug=False,
