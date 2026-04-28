@@ -149,7 +149,8 @@ def index_circular(
         # for circulars, the list-page title is the AUTHORITATIVE source —
         # the detail page's H1 is often just "Notifications".
         existing = conn.execute(
-            "SELECT title FROM documents WHERE md_id = ?", (notif_id,)
+            "SELECT title FROM documents WHERE md_id = ? AND document_family = ?",
+            (notif_id, document_family),
         ).fetchone()
         new_title_is_garbage = (
             not title
@@ -172,7 +173,7 @@ def index_circular(
                 issued_date, rbi_ref, department, document_family,
                 pdf_urls_json, status, first_seen_at, last_seen_at, raw_list_sha256
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(md_id) DO UPDATE SET
+            ON CONFLICT(md_id, document_family) DO UPDATE SET
                 document_id = excluded.document_id,
                 title = excluded.title,
                 detail_url = excluded.detail_url,
@@ -202,11 +203,12 @@ def index_circular(
             ),
         )
 
-        # Idempotent chunk replacement.
+        # Idempotent chunk replacement. Scope by document_id (family-prefixed)
+        # so a sibling family's chunks with the same numeric ID survive.
         old_rowids = [
             r[0]
             for r in conn.execute(
-                "SELECT rowid FROM chunks WHERE md_id = ?", (notif_id,)
+                "SELECT rowid FROM chunks WHERE document_id = ?", (document_id,)
             )
         ]
         if old_rowids:
@@ -218,7 +220,7 @@ def index_circular(
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("chunks_vec.delete_skip", error=str(exc))
-        conn.execute("DELETE FROM chunks WHERE md_id = ?", (notif_id,))
+        conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
 
         # Embed.
         try:

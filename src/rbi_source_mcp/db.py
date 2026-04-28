@@ -73,7 +73,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS documents (
     document_id      TEXT PRIMARY KEY,    -- e.g., "rbi:master_direction:12550" or "rbi:circular:12922"
-    md_id            TEXT NOT NULL UNIQUE,-- numeric RBI ID; named md_id for legacy reasons but used generically
+    md_id            TEXT NOT NULL,       -- numeric RBI ID; named md_id for legacy reasons but used generically across families
     title            TEXT NOT NULL,
     detail_url       TEXT NOT NULL,
     last_updated_at  TEXT,                -- "Updated as on <date>" parsed from title; ISO 8601
@@ -90,7 +90,13 @@ CREATE TABLE IF NOT EXISTS documents (
                        CHECK (status IN ('current', 'withdrawn', 'superseded', 'draft', 'unknown')),
     first_seen_at    TEXT NOT NULL,
     last_seen_at     TEXT NOT NULL,
-    raw_list_sha256  TEXT                 -- sha of the list page that introduced this row
+    raw_list_sha256  TEXT,                -- sha of the list page that introduced this row
+    -- Compound uniqueness: md_id is unique WITHIN a family, not across all
+    -- families. master_direction id=12922 and press_release prid=12922 are
+    -- distinct documents and must not collide on upsert. Codex review
+    -- 2026-04-28 caught the original column-level UNIQUE(md_id) as a
+    -- cross-family overwrite hazard.
+    UNIQUE (md_id, document_family)
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_md_id ON documents(md_id);
@@ -275,13 +281,23 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if schema_sql and "CHECK (document_family" in (schema_sql[0] or ""):
         logger.info("schema.migrate.rebuild_documents_drop_check")
+        # CRITICAL: turn off FK enforcement before the table rebuild. The
+        # `chunks` table has FOREIGN KEY (document_id) REFERENCES documents,
+        # so `DROP TABLE documents` with FKs ON would fail on any legacy DB
+        # that already has chunks indexed (which is every production DB by
+        # the time this migration runs). PRAGMA foreign_keys is a no-op
+        # inside a transaction, hence it must be set BEFORE BEGIN and
+        # restored AFTER COMMIT. Per SQLite docs, this is the canonical
+        # table-rebuild pattern. We also call foreign_key_check after the
+        # rebuild to verify referential integrity wasn't broken.
         try:
+            conn.execute("PRAGMA foreign_keys = OFF")
             conn.executescript(
                 """
                 BEGIN;
                 CREATE TABLE documents_new (
                     document_id      TEXT PRIMARY KEY,
-                    md_id            TEXT NOT NULL UNIQUE,
+                    md_id            TEXT NOT NULL,
                     title            TEXT NOT NULL,
                     detail_url       TEXT NOT NULL,
                     last_updated_at  TEXT,
@@ -294,7 +310,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
                                        CHECK (status IN ('current', 'withdrawn', 'superseded', 'draft', 'unknown')),
                     first_seen_at    TEXT NOT NULL,
                     last_seen_at     TEXT NOT NULL,
-                    raw_list_sha256  TEXT
+                    raw_list_sha256  TEXT,
+                    UNIQUE (md_id, document_family)
                 );
                 INSERT INTO documents_new (
                     document_id, md_id, title, detail_url, last_updated_at,
@@ -314,10 +331,95 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
                 COMMIT;
                 """
             )
+            # Verify referential integrity survived the rebuild. If any
+            # chunks now point at missing documents, log loudly — the data
+            # is still accessible (FKs are only enforced when ON), but the
+            # corpus has a real consistency problem worth surfacing.
+            orphans = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if orphans:
+                logger.error(
+                    "schema.migrate.fk_check_orphans",
+                    count=len(orphans),
+                    sample=[dict(r) for r in orphans[:3]],
+                )
         except sqlite3.OperationalError as exc:
             logger.error("schema.migrate.rebuild_failed", error=str(exc))
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("ROLLBACK")
+        finally:
+            # Restore FK enforcement regardless of outcome. SCHEMA_SQL has
+            # already executed `PRAGMA foreign_keys = ON` once, but on an
+            # exception that pragma may have been clobbered — be explicit.
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute("PRAGMA foreign_keys = ON")
+
+    # Migration v3: drop column-level UNIQUE on md_id; replace with
+    # UNIQUE(md_id, document_family). Codex outside-voice review caught that
+    # globally-unique md_id silently overwrites cross-family collisions
+    # (master_direction id=12922 vs press_release prid=12922 would land in
+    # the same row). Fresh DBs created from SCHEMA_SQL above already have
+    # the compound key; this rebuild only fires on legacy DBs whose schema
+    # still has the column-level UNIQUE.
+    schema_sql_v3 = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'"
+    ).fetchone()
+    if schema_sql_v3 and "md_id            TEXT NOT NULL UNIQUE" in (schema_sql_v3[0] or ""):
+        logger.info("schema.migrate.rebuild_documents_compound_unique")
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.executescript(
+                """
+                BEGIN;
+                CREATE TABLE documents_new (
+                    document_id      TEXT PRIMARY KEY,
+                    md_id            TEXT NOT NULL,
+                    title            TEXT NOT NULL,
+                    detail_url       TEXT NOT NULL,
+                    last_updated_at  TEXT,
+                    issued_date      TEXT,
+                    rbi_ref          TEXT,
+                    department       TEXT,
+                    document_family  TEXT NOT NULL DEFAULT 'master_direction',
+                    pdf_urls_json    TEXT NOT NULL DEFAULT '[]',
+                    status           TEXT NOT NULL DEFAULT 'current'
+                                       CHECK (status IN ('current', 'withdrawn', 'superseded', 'draft', 'unknown')),
+                    first_seen_at    TEXT NOT NULL,
+                    last_seen_at     TEXT NOT NULL,
+                    raw_list_sha256  TEXT,
+                    UNIQUE (md_id, document_family)
+                );
+                INSERT INTO documents_new (
+                    document_id, md_id, title, detail_url, last_updated_at,
+                    issued_date, rbi_ref, department, document_family, pdf_urls_json,
+                    status, first_seen_at, last_seen_at, raw_list_sha256
+                )
+                SELECT
+                    document_id, md_id, title, detail_url, last_updated_at,
+                    issued_date, rbi_ref, department, document_family, pdf_urls_json,
+                    status, first_seen_at, last_seen_at, raw_list_sha256
+                FROM documents;
+                DROP TABLE documents;
+                ALTER TABLE documents_new RENAME TO documents;
+                CREATE INDEX IF NOT EXISTS idx_documents_md_id ON documents(md_id);
+                CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+                CREATE INDEX IF NOT EXISTS idx_documents_family ON documents(document_family);
+                COMMIT;
+                """
+            )
+            orphans = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if orphans:
+                logger.error(
+                    "schema.migrate.v3.fk_check_orphans",
+                    count=len(orphans),
+                    sample=[dict(r) for r in orphans[:3]],
+                )
+        except sqlite3.OperationalError as exc:
+            logger.error("schema.migrate.v3.rebuild_failed", error=str(exc))
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute("ROLLBACK")
+        finally:
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute("PRAGMA foreign_keys = ON")
 
 
 def init_db(db_path: str | Path) -> None:
@@ -335,9 +437,23 @@ def init_db(db_path: str | Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def find_md_by_id(conn: sqlite3.Connection, md_id: str) -> sqlite3.Row | None:
-    """Return the documents row for a Master Direction ID, or None."""
-    cur = conn.execute("SELECT * FROM documents WHERE md_id = ?", (md_id,))
+def find_md_by_id(
+    conn: sqlite3.Connection,
+    md_id: str,
+    *,
+    family: str = "master_direction",
+) -> sqlite3.Row | None:
+    """Return the documents row for an md_id within a given family, or None.
+
+    md_id is unique only WITHIN a family (compound UNIQUE(md_id, document_family)),
+    so the caller must say which family it's looking up. Defaults to
+    `master_direction` because that's how check_current.py uses it (the
+    URL pattern that triggers this lookup is family-specific).
+    """
+    cur = conn.execute(
+        "SELECT * FROM documents WHERE md_id = ? AND document_family = ?",
+        (md_id, family),
+    )
     return cur.fetchone()
 
 
@@ -643,7 +759,7 @@ def upsert_md(
             document_id, md_id, title, detail_url, last_updated_at, department,
             pdf_urls_json, status, first_seen_at, last_seen_at, raw_list_sha256
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(md_id) DO UPDATE SET
+        ON CONFLICT(md_id, document_family) DO UPDATE SET
             title = excluded.title,
             detail_url = excluded.detail_url,
             last_updated_at = COALESCE(excluded.last_updated_at, documents.last_updated_at),
