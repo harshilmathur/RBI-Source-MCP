@@ -50,10 +50,28 @@ src/rbi_source_mcp/
       ├─ cases.py            25 hand-labeled test cases (REG-4 regression suite)
       └─ runner.py           Eval gate; passes at ≥80%
 
-tests/                       65 unit tests, all passing
-data/db.sqlite              ~165 MB; 803 documents, 56,653 chunks
-fly.toml                     Hosted-endpoint config; never been deployed
+tests/                       77 unit tests, all passing (incl. error-envelope, compound-key)
+data/db.sqlite              ~171 MB; 803 documents, 56,653 chunks (5 families)
+fly.toml + Dockerfile        Hosted-endpoint config; LIVE at https://rbi-source.harshil.ai/mcp/
+.dockerignore                Keeps build context lean; preserves db.sqlite.initial seed
 ```
+
+## Hosted endpoint
+
+Live at `https://rbi-source.harshil.ai/mcp/` (Fly app `rbi-source-mcp`,
+Mumbai, single machine, always-on). Custom domain via Cloudflare DNS
+(currently orange-cloud / proxied; the gray-cloud direct option is
+documented but not chosen).
+
+- Fly v4 IP: `66.241.124.231` (shared)
+- Fly v6 IP: `2a09:8280:1::10c:e3fc:0` (dedicated)
+- Cert: Let's-Encrypt via Fly (auto-renew). Cloudflare wildcard cert
+  is what end users see when proxy is on.
+- Endpoints: `GET /` (banner), `GET /health` (deep check, 503 on
+  empty corpus / sqlite-vec missing degrades to 200 + `degraded: true`),
+  `POST /mcp/` (streamable-HTTP).
+- Logs: `fly logs -a rbi-source-mcp`. SSH: `fly ssh console -a rbi-source-mcp`.
+- Redeploy: `fly deploy --ha=false` from repo root.
 
 ## Console scripts
 
@@ -86,9 +104,24 @@ All scripts use `RBI_SOURCE_DB` env var (defaults to `./data/db.sqlite`).
   See `db.VALID_FAMILIES`.
 - **Schema migrations are forward-only and idempotent.** `_migrate_schema`
   runs on every `connect()`. Adding columns: append to the `migrations` list.
-  Dropping a CHECK or restructuring: write a one-shot rebuild block.
+  Dropping a CHECK or restructuring: write a one-shot rebuild block. **Wrap
+  table rebuilds with `PRAGMA foreign_keys = OFF/ON`** — chunks reference
+  documents.document_id, and `DROP TABLE documents` with FKs ON will fail
+  on any DB that already has chunks. v2 + v3 migrations both follow this
+  pattern; PRAGMA foreign_key_check after the rebuild surfaces orphans.
 - **Every MCP response is wrapped with `_disclaimer` + `_llm_instruction`**
   at the top of the JSON object via `server._wrap_response()`. Never bypass.
+  **Also on the error path** — every tool dispatch is in try/except that
+  routes to `_error_response()` (which calls `_wrap_response`). Tests in
+  `tests/test_error_envelope.py` guard the disclaimer-on-error contract.
+- **md_id is unique per family, not globally.** Schema uses
+  `UNIQUE(md_id, document_family)`. All upserts use
+  `ON CONFLICT(md_id, document_family)`. Lookups by md_id alone are
+  family-scoped via `find_md_by_id(conn, md_id, family=...)`.
+- **Input-size cap on free-text fields.** `MAX_INPUT_LEN = 32_000` in
+  server.py. `text` (check_compliance) and `query` (search) are checked
+  before dispatch; oversized inputs return a wrapped `input_too_large`
+  envelope. Prevents event-loop blocking on huge payloads.
 
 ## Known gotchas
 
@@ -117,9 +150,9 @@ All scripts use `RBI_SOURCE_DB` env var (defaults to `./data/db.sqlite`).
 ## Testing
 
 ```bash
-.venv/bin/pytest -q              # 65 tests, all passing
-.venv/bin/ruff check .           # lint, must be clean
-.venv/bin/rbi-source-eval        # corpus quality gate (must pass at ≥80%)
+uv run pytest -q                 # 77 tests, all passing
+uv run ruff check src/ tests/    # lint, must be clean
+uv run rbi-source-eval           # corpus quality gate (must pass at ≥80%)
 ```
 
 The eval is the canonical regression test — if it drops below 80%, retrieval
@@ -141,8 +174,10 @@ quality has regressed and the build should fail. Currently 100% (25/25).
 
 | Area | Status |
 |---|---|
-| Hosted Fly endpoint | fly.toml updated; `fly launch` not run yet |
+| Hosted Fly endpoint | ✓ LIVE at `https://rbi-source.harshil.ai/mcp/` |
+| Custom domain | ✓ rbi-source.harshil.ai via Cloudflare DNS |
 | HTTP transport for hosted mode | ✓ landed — server_http.py + rbi-source-mcp-http console script |
+| Weekly refresh GH Action | Configured but not yet running on schedule |
 | Notifications archive (thousands of docs) | Year-by-year POST-form crawler not yet built |
 | `document_versions` (history) | Currently only stores current state |
 | Amendment chain extraction | Blocks `find_updates` + `trace_relationships` tools |

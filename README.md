@@ -31,16 +31,20 @@ Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-small-en-v1.5` 384-dim 
 
 ## Quick Start
 
-> **Status:** local-only. Hosted endpoint not yet deployed (fly.toml is ready; needs `fly launch`). Self-hosting via `docker compose up` is the path for now.
-
-When the hosted endpoint goes live, this will be a 2-row install table:
+> **Status:** **Live** at `https://rbi-source.harshil.ai/mcp/` — Fly.io single-machine in Mumbai, 1 GB RAM, 1 GB volume, always-on. Public, unauthenticated, retrieval-only.
 
 | Client | Connect |
 |---|---|
-| Claude.ai | Settings → Connectors → Add Integration → paste `<HOSTED_URL>` |
-| Claude Code | `claude mcp add rbi-source --transport http <HOSTED_URL>` |
+| Claude Code | `claude mcp add rbi-source --transport http https://rbi-source.harshil.ai/mcp/` |
+| Claude.ai (Pro/Team) | Settings → Connectors → Add custom connector → paste `https://rbi-source.harshil.ai/mcp/` |
+| ChatGPT (Plus/Pro/Team) | Settings → Connectors → Create custom connector → paste `https://rbi-source.harshil.ai/mcp/` |
 
-Claude Desktop + Cursor (with one-click deeplink) ship with v1.0 hosted launch.
+Endpoints:
+- `GET /` — corpus stats banner
+- `GET /health` — liveness probe (returns 503 if corpus unavailable)
+- `POST /mcp/` — MCP streamable-HTTP transport
+
+If you'd rather run your own copy locally, see [Run your own copy](#run-your-own-copy) below.
 
 ## Tools
 
@@ -83,20 +87,22 @@ Other inputs return a structured `unsupported_at_v0.1` response. **Never silentl
 
 ### Mandatory disclaimer
 
-Every tool response includes a `_disclaimer` field at the top of the JSON object plus an `_llm_instruction` telling the consuming LLM to surface the disclaimer when presenting results to the user. Four required points: (1) not legal advice, (2) retrieval-only, (3) provisions may have changed since refresh, (4) verify with a human compliance reviewer.
+Every tool response includes a `_disclaimer` field at the top of the JSON object plus an `_llm_instruction` telling the consuming LLM to surface the disclaimer when presenting results to the user. Five required points: (1) not legal advice, (2) retrieval-only — no compliance verdicts, (3) provisions may have been amended/withdrawn since the last corpus refresh, (4) verify with a qualified human compliance reviewer before acting, (5) unofficial — not affiliated with the Reserve Bank of India.
+
+The legal posture is preserved on **error** responses too: if a tool dispatch raises (DB unavailable, embedder OOM, etc.), the wrapped error envelope still carries `_disclaimer` + `_llm_instruction` at the top. Guarded by `tests/test_error_envelope.py`.
 
 ## Architecture
 
 ```
-   Fly machine ($5/mo, always-on)        [planned; not yet deployed]
-   ──────────────────────────────────
+   Fly machine (rbi-source-mcp, bom region, always-on)        [LIVE]
+   ──────────────────────────────────────────────────────────
+   shared-cpu-1x, 1 GB RAM, 1 GB volume, single rolling-restart
    /data/db.sqlite       ← FTS5 + sqlite-vec, atomic-swap on refresh
-   /data/db-prev.sqlite  ← one-command rollback target
-   /data/telemetry.jsonl ← anonymous opt-out, daily-rotated
-   Litestream sidecar    → R2/S3 (~10s lag, disaster recovery)
+   /data/db-prev.sqlite  ← one-command rollback target [planned]
+   custom domain         → rbi-source.harshil.ai (Cloudflare DNS)
 
-   Weekly GitHub Action (Sundays 02:00 UTC)
-   ──────────────────────────────────────────
+   Weekly GitHub Action (Sundays 02:00 UTC)                   [planned]
+   ──────────────────────────────────────────────────────────
    crawl 5 families → hash-gate → re-extract changed PDFs
    → embed via bge-small-en-v1.5
    → build new SQLite (FTS5 + chunks_vec virtual table)
@@ -178,12 +184,15 @@ Or from a browser-based client, paste `http://your-host:8080/mcp` into the conne
 - ✓ All 19 active Master Circulars
 - ✓ 9,908 Withdrawn-circular metadata
 - ✓ Hybrid retrieval (FTS5 + sqlite-vec + RRF fusion)
-- ✓ Mandatory disclaimer on every response
+- ✓ Mandatory disclaimer on every response (5-point text, error envelopes too)
+- ✓ Compound `UNIQUE(md_id, document_family)` schema (5 families coexist safely)
 - ✓ 25-case eval gate
-- ✓ Weekly refresh GH Action (configured, not yet running on schedule)
+- ✓ Streamable-HTTP transport (`rbi-source-mcp-http`)
+- ✓ **Hosted endpoint live** at `https://rbi-source.harshil.ai/mcp/` (Fly.io, Mumbai)
+- ✓ Custom domain via Cloudflare DNS, Fly Let's-Encrypt cert auto-renewing
 
 **v1.0 (next):**
-- Hosted endpoint on Fly.io (`fly launch` + HTTP transport wrapper)
+- Weekly refresh GH Action (configured, not yet running on schedule)
 - MCP Registry listing
 - Cursor one-click install deeplink
 - Public stats page from telemetry
