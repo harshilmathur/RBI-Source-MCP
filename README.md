@@ -136,7 +136,7 @@ python3 -m venv .venv
 
 Or via Docker (when v1.0 image lands): `docker compose up`.
 
-### Register with Claude Code locally
+### Register with Claude Code locally (stdio)
 
 ```bash
 claude mcp add rbi-source \
@@ -146,6 +146,27 @@ claude mcp add rbi-source \
 ```
 
 Then `/mcp` to verify connection. The four tools (`rbi.check_compliance`, `rbi.search`, `rbi.get_document`, `rbi.check_current`) become available in any Claude Code session.
+
+### Run as an HTTP server (hosted-mode parity)
+
+For testing the hosted experience locally, or for running on a private VM / Fly:
+
+```bash
+RBI_SOURCE_DB=$(pwd)/data/db.sqlite \
+  .venv/bin/rbi-source-mcp-http --host 0.0.0.0 --port 8080
+```
+
+Endpoints:
+- `GET /` — corpus stats banner (curl-friendly)
+- `GET /health` — liveness probe (used by Fly + load balancers)
+- `POST /mcp/` — MCP streamable-HTTP endpoint
+
+Connect from any MCP client:
+```bash
+claude mcp add rbi-source --transport http http://your-host:8080/mcp
+```
+
+Or from a browser-based client, paste `http://your-host:8080/mcp` into the connector dialog.
 
 ## Roadmap
 

@@ -30,8 +30,14 @@ RUN pip install --no-cache-dir --upgrade pip \
 #   /data/db-prev.sqlite  (rollback target)
 #   /data/telemetry.jsonl (anonymous opt-out, daily-rotated)
 ENV RBI_SOURCE_DB=/data/db.sqlite
+ENV PORT=8080
 VOLUME /data
+EXPOSE 8080
 
-# MCP server runs over stdio when invoked directly. The hosted-mode HTTP
-# transport is added in a follow-up commit (uvicorn-based wrapper).
-ENTRYPOINT ["rbi-source-mcp"]
+# Default container entrypoint: streamable-HTTP transport.
+# The stdio entrypoint (rbi-source-mcp) is still installed in the image; for
+# local stdio use, override with `docker run ... rbi-source-mcp`.
+# Fly's [processes] block (in fly.toml) sets the actual command at runtime
+# but this default makes `docker run` work end-to-end.
+ENTRYPOINT ["rbi-source-mcp-http"]
+CMD ["--host", "0.0.0.0", "--port", "8080"]

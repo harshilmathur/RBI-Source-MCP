@@ -42,12 +42,14 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-httpx>=0.30.0",
+    "asgi-lifespan>=2.1.0",   # required to test HTTP server lifespan in-process
     "ruff>=0.6.0",
     "mypy>=1.10.0",
 ]
 
 [project.scripts]
 rbi-source-mcp = "rbi_source_mcp.server:main"
+rbi-source-mcp-http = "rbi_source_mcp.server_http:main"
 rbi-source-crawl = "rbi_source_mcp.crawler.refresh:main"
 rbi-source-index = "rbi_source_mcp.indexer.build_md_index:main"
 rbi-source-index-all = "rbi_source_mcp.indexer.build_all:main"
