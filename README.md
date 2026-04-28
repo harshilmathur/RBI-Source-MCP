@@ -1,32 +1,37 @@
 # RBI Source MCP
 
-> **Every RBI Master Direction. Version-aware. Knows what's withdrawn. Zero install.**
+> **The entire RBI corpus, version-aware, citation-first, in your AI workflow.**
 
-An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that brings authoritative Reserve Bank of India regulatory information into AI coding environments like Claude.ai, Claude Code, and Cursor — with version awareness, citation-first responses, and explicit withdrawal/supersession detection.
+An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that brings authoritative Reserve Bank of India regulatory information into Claude.ai, Claude Code, and Cursor — with hybrid retrieval over Master Directions, Circulars, Press Releases, and FAQs, version-awareness, citation-first responses, and explicit withdrawal/supersession detection.
 
-> ⚠️ **Unofficial, community-maintained open-source tool.** RBI Source MCP is not affiliated with, endorsed by, or sponsored by the Reserve Bank of India. RBI® is a trademark of the Reserve Bank of India. For takedown or legal inquiries, contact: _<takedown email — to be set>_ (5 business-day response SLA).
+> ⚠️ **Unofficial, community-maintained open-source tool.** RBI Source MCP is not affiliated with, endorsed by, or sponsored by the Reserve Bank of India. RBI® is a trademark of the Reserve Bank of India. For takedown or legal inquiries: open an issue on this repo (5 business-day response SLA).
 
 ## Why this exists
 
 Fintech builders writing a clause, PRD section, or partner agreement currently ping the compliance team in Slack and wait hours-to-days to know if their language conflicts with a current RBI rule. Or they Google `rbi.org.in`, land on an ASP.NET page that may or may not be a withdrawn circular, and ship against rules superseded three years ago.
 
-RBI Source MCP collapses this loop. Paste a clause or section into Claude/Cursor with this MCP connected, and Claude returns the relevant RBI Master Direction provisions with citations, paragraph anchors, source URLs, and current/withdrawn status. Retrieval-only by design — this MCP doesn't issue compliance verdicts; the LLM synthesizes from the cited source material, and the user makes the call.
+RBI Source MCP collapses this loop. Paste a clause or section into Claude/Cursor with this MCP connected, and Claude returns the relevant RBI provisions with citations, paragraph anchors, source URLs, and current/withdrawn status. **Retrieval-only by design** — this MCP doesn't issue compliance verdicts; the LLM synthesizes from the cited source material, the user makes the call.
 
-**The visceral demo:** paste a clause from a draft TOS into Claude → cited paragraphs from the Payment Aggregator Master Direction, with paragraph anchors, the official RBI URL, and the published date. Verify with a human compliance reviewer before shipping.
+**The visceral demo:** paste a clause from a draft TOS into Claude → cited paragraphs from the relevant Master Direction (e.g., Payment Aggregator MD, KYC MD, PPI MD, Cards MD), with paragraph anchors, the official RBI URL, and the published date. Verify with a human compliance reviewer before shipping.
 
-## Coverage (planned for v1.0)
+## Coverage (current)
 
-- ~80 RBI Master Directions from `BS_ViewMasDirections.aspx`
-- All amendment circulars referenced inside MDs
-- Full withdrawn-circulars list from `NotificationUserWithdrawnCircular.aspx`
-- Weekly refresh, hash-gated, atomic-swap deploy
-- KYC Master Direction is the launch-demo showcase
+| Content family | Docs | Chunks | Source |
+|---|---|---|---|
+| **Master Directions** | 342 | 50,088 | `BS_ViewMasDirections.aspx` |
+| **Standalone Circulars** | 290 | 1,532 | `BS_ViewListofstandalonecirculars.aspx` |
+| **FAQs** | 98 | 1,828 | `FAQView.aspx` |
+| **Press Releases** | 54 | 357 | `BS_PressReleaseDisplay.aspx` |
+| **Master Circulars** | 19 | 2,848 | `BS_ViewMasterCirculardetails.aspx` |
+| **TOTAL** | **803** | **56,653** | |
 
-Coverage badges (corpus stats, last refresh) ship at v1.0.
+Plus **9,908 withdrawn-circular records** indexed for `check_current` lookup (metadata only, no full-text indexing).
+
+Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-small-en-v1.5` 384-dim dense) fused via Reciprocal Rank Fusion (k=60). Every response carries a mandatory legal disclaimer. Eval gate: 25 hand-labeled compliance cases, must pass at ≥80%; currently 100%.
 
 ## Quick Start
 
-> **v0.1 status:** scaffold + crawler + MCP server skeleton. Hosted endpoint not yet live. Self-hosting via `docker compose up` is the path until the hosted URL is published.
+> **Status:** local-only. Hosted endpoint not yet deployed (fly.toml is ready; needs `fly launch`). Self-hosting via `docker compose up` is the path for now.
 
 When the hosted endpoint goes live, this will be a 2-row install table:
 
@@ -35,99 +40,148 @@ When the hosted endpoint goes live, this will be a 2-row install table:
 | Claude.ai | Settings → Connectors → Add Integration → paste `<HOSTED_URL>` |
 | Claude Code | `claude mcp add rbi-source --transport http <HOSTED_URL>` |
 
-Claude Desktop + Cursor (with one-click deeplink) ship at v1.0.
+Claude Desktop + Cursor (with one-click deeplink) ship with v1.0 hosted launch.
 
-## Tools (v0.1.5)
+## Tools
 
 ### `rbi.check_compliance(text, topic_hint?)` — HEADLINE
 
-Paste free text (a clause, PRD section, draft policy paragraph, code comment) and get back ranked relevant Master Direction provisions with citations: paragraph anchor, official URL, RBI reference, last-updated date, current/withdrawn status.
+Paste free text (a clause, PRD section, draft policy paragraph, code comment) and get back ranked relevant provisions with citations: paragraph anchor, official URL, RBI reference, last-updated date, current/withdrawn status.
 
 **Retrieval-only by design.** The MCP does not issue compliance verdicts. The LLM consuming the tool synthesizes the verdict from cited provisions; the user makes the decision. This separation keeps the MCP defensibly on the source-layer side of the line — we are not an unauthorized regulatory advisor.
 
-`topic_hint` (optional) biases retrieval toward a known topic. Supported v0.1.5: `"payment_aggregator"`, `"pa"`, `"pa_pg"`. Unknown values are ignored.
+`topic_hint` (optional) biases retrieval toward a known topic. Supported:
+- `payment_aggregator` / `pa` / `pa_pg` — Payment Aggregator MD
+- `kyc_bank` / `kyc_nbfc` / `kyc` (spans both)
+- `ppi` / `prepaid` / `wallet` — Prepaid Instruments MD
+- `cards` / `credit_card` / `debit_card` / `tokenisation` — Commercial Banks Cards MD
+- `e_mandate` / `recurring` — E-mandate Framework
+- `digital_payment_security` / `afa` — Digital Payment Security Controls
 
-Out-of-scope inputs (recipes, sports articles, anything unrelated) return `low_confidence: true` so consuming LLMs can decline to synthesize.
+Unknown values are ignored (search spans full corpus). Out-of-scope inputs (recipes, sports articles, anything unrelated) return `low_confidence: true` so consuming LLMs can decline to synthesize.
 
 ### `rbi.search(query, filters?)` — direct retrieval
 
-Same engine `check_compliance` uses, exposed for cleaner keyword queries: "what are the net-worth requirements for PAs". Returns ranked chunks with citations.
+Same hybrid engine `check_compliance` uses, exposed for cleaner keyword queries: "what are the net-worth requirements for PAs". Returns ranked chunks with citations across the whole corpus or filtered by topic.
 
-v0.1.5 uses FTS5 sparse retrieval. Hybrid (FTS5 + sqlite-vec dense) ships at v0.5.
+### `rbi.get_document(document_id, include_text?, as_of?)` — fetch a document
 
-### `rbi.get_document(document_id, include_text?, as_of?)` — fetch a Master Direction
-
-Returns metadata + table of contents (chunk anchors, sections, page numbers). Pass `include_text=true` to also get the full assembled body. `as_of` reserved for v1.1; ignored at v0.1.5.
+Returns metadata + table of contents (chunk anchors, sections, page numbers) for any document. Pass `include_text=true` to get the full assembled body. `as_of` reserved for v1.1 (when document version history lands).
 
 ### `rbi.check_current(url_or_ref)` — safety/utility tool
 
-Paste an RBI URL and learn whether it's current, withdrawn, or out-of-corpus. Useful for verifying a citation a user already has. **v0.1.5 supports two URL patterns:**
-- `https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=<MD_ID>` — Master Direction lookup, returns `current` / `unknown`.
-- `https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=<NOTIF_ID>` — circular lookup, returns `withdrawn` (with `withdrawn_date`) if the ID appears in RBI's withdrawn-circulars list, else `not_withdrawn`.
+Paste an RBI URL and learn whether it's current, withdrawn, or out-of-corpus. Useful for verifying a citation. Three-step lookup:
+1. Withdrawn-circulars list → returns `withdrawn` with replacement reference
+2. Active corpus (any indexed family) → returns `current` with full citation
+3. Neither → returns `not_withdrawn` with honest caveat
 
-For unsupported patterns (FAQ URLs, textual `RBI/...` refs, anything else): returns a structured `unsupported_at_v0.1` response. **Never silently fails.**
+Supported URL patterns:
+- `BS_ViewMasDirections.aspx?id=<MD_ID>`
+- `NotificationUser.aspx?Id=<NOTIF_ID>` (checked against withdrawn list + active corpus)
 
-## Architecture (v0.1)
+Other inputs return a structured `unsupported_at_v0.1` response. **Never silently fails.**
+
+### Mandatory disclaimer
+
+Every tool response includes a `_disclaimer` field at the top of the JSON object plus an `_llm_instruction` telling the consuming LLM to surface the disclaimer when presenting results to the user. Four required points: (1) not legal advice, (2) retrieval-only, (3) provisions may have changed since refresh, (4) verify with a human compliance reviewer.
+
+## Architecture
 
 ```
-   Fly machine ($5/mo, always-on)
+   Fly machine ($5/mo, always-on)        [planned; not yet deployed]
    ──────────────────────────────────
-   /data/db.sqlite   ← FTS5 + sqlite-vec, atomic-swap on refresh
-   /data/db-prev.sqlite ← one-command rollback target
+   /data/db.sqlite       ← FTS5 + sqlite-vec, atomic-swap on refresh
+   /data/db-prev.sqlite  ← one-command rollback target
    /data/telemetry.jsonl ← anonymous opt-out, daily-rotated
-   Litestream sidecar → R2/S3 (~10s lag, disaster recovery)
+   Litestream sidecar    → R2/S3 (~10s lag, disaster recovery)
 
    Weekly GitHub Action (Sundays 02:00 UTC)
    ──────────────────────────────────────────
-   crawl → hash-gate → re-extract changed PDFs → build new SQLite
-   → smoke test (10 golden queries + regression suite)
+   crawl 5 families → hash-gate → re-extract changed PDFs
+   → embed via bge-small-en-v1.5
+   → build new SQLite (FTS5 + chunks_vec virtual table)
+   → smoke test (golden 25-query eval, must hit ≥80%)
    → if PASS: scp to Fly → atomic rename → SIGHUP server (~5s blip)
    → if FAIL: abort, alert, live DB untouched
 ```
 
-See [DESIGN.md](docs/DESIGN.md) for the full architecture, decisions, and review history (TBD — will be linked here once written).
+See the [/Users/harshil/.gstack/projects/rbimcp/](/Users/harshil/.gstack/projects/rbimcp/) directory (locally, not in repo) for full design history including office-hours, DX review, and eng review.
 
 ## Run your own copy
 
 ```bash
 git clone https://github.com/harshilmathur/RBI-Source-MCP.git
 cd RBI-Source-MCP
-docker compose up
+
+# Set up Python env
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+
+# Crawl the source pages (populates documents + withdrawn metadata)
+.venv/bin/rbi-source-crawl
+
+# Index each content family (downloads bge-small ~135 MB on first run; ~1-2 hours total for full crawl)
+.venv/bin/rbi-source-index-all                  # 342 Master Directions
+.venv/bin/rbi-source-index-all-circulars        # 290 Standalone Circulars
+.venv/bin/rbi-source-index-press-release --bulk # 54 Press Releases
+.venv/bin/rbi-source-index-faq --bulk           # 98 FAQs
+.venv/bin/rbi-source-index-master-circular --bulk  # 19 Master Circulars
+
+# Verify the eval gate
+.venv/bin/rbi-source-eval
+
+# Run the MCP server (stdio)
+.venv/bin/rbi-source-mcp
 ```
 
-Self-hosters: source-of-truth corpus refresh runs from this repo's GitHub Actions; you can either fetch the latest pre-built `db.sqlite` from GitHub Releases (when v1.0 ships), or run the crawler yourself with `python -m rbi_source_mcp.crawler.refresh`.
+Or via Docker (when v1.0 image lands): `docker compose up`.
+
+### Register with Claude Code locally
+
+```bash
+claude mcp add rbi-source \
+  -s user \
+  -e RBI_SOURCE_DB=$(pwd)/data/db.sqlite \
+  -- $(pwd)/.venv/bin/rbi-source-mcp
+```
+
+Then `/mcp` to verify connection. The four tools (`rbi.check_compliance`, `rbi.search`, `rbi.get_document`, `rbi.check_current`) become available in any Claude Code session.
 
 ## Roadmap
 
-**v0.1.5 — single-MD compliance proof (current):**
-- Detail-page crawler + WAF-aware PDF fetcher (rbidocs bot-protection bypass via browser headers + Referer)
-- PDF extraction with quality gate
-- Paragraph chunking with section anchors (137 chunks for the PA MD)
-- FTS5 sparse retrieval over chunks
-- `rbi.check_compliance`, `rbi.search`, `rbi.get_document` working end-to-end
-- Currently indexed: Master Direction on Regulation of Payment Aggregator (PA), id=12896
+**Done (today's state):**
+- ✓ All 342 Master Directions
+- ✓ All 290 Standalone Circulars
+- ✓ All 98 FAQs
+- ✓ 54 most-recent Press Releases
+- ✓ All 19 active Master Circulars
+- ✓ 9,908 Withdrawn-circular metadata
+- ✓ Hybrid retrieval (FTS5 + sqlite-vec + RRF fusion)
+- ✓ Mandatory disclaimer on every response
+- ✓ 25-case eval gate
+- ✓ Weekly refresh GH Action (configured, not yet running on schedule)
 
-**v0.5 — top-10 MDs (next):**
-- Same pipeline scaled to KYC, digital lending, tokenisation, and 7 other high-traffic MDs
-- Dense embeddings (`bge-small-en-v1.5` via sqlite-vec) for hybrid retrieval
-- Eval set of 20 hand-labeled (clause, expected provision) pairs, must hit top-3 at ≥80%
-- Hosted endpoint live on Fly with weekly atomic-swap refresh
-
-**v1.0 — full corpus:**
-- All 342 Master Directions indexed
-- 3 named regression tests gating every refresh
-- MCP Registry listing, Cursor one-click install link, public stats page from telemetry
+**v1.0 (next):**
+- Hosted endpoint on Fly.io (`fly launch` + HTTP transport wrapper)
+- MCP Registry listing
+- Cursor one-click install deeplink
+- Public stats page from telemetry
+- Press Releases full archive (year-by-year crawl)
 
 **v1.1+:**
-- Amendment chain extraction
-- `find_updates` for the change feed
+- Notifications archive (thousands of docs; needs year-iterating crawler)
+- `document_versions` — preserve historical snapshots, enable `compare_versions` and `as_of` queries
+- Amendment chain extraction → unblocks `find_updates` and `trace_relationships` tools
 - OCR pipeline for scanned MDs
-- Full URL pattern parsing (notifications, FAQs, textual refs)
 - `/playground` HTML zero-install try-it surface
 
 ## Contributing
 
-Issue templates for "MD missing or wrong status," "Citation paragraph mismatch," and "Topic tag suggestion" land with the v0.1 release. Until then: open an issue describing what you found.
+Open an issue or PR. Contribution areas welcome:
+- Parser fixes for any of the 5 content-family list pages
+- Topic-hint mapping additions in `mcp/check_compliance.py`
+- Eval cases (`src/rbi_source_mcp/eval/cases.py`) — especially clause + expected-provision pairs from real fintech compliance work
+- New content families (e.g., RE-wise Draft Directions)
 
 GitHub Discussions enabled for design questions and corpus quality reports.
 
@@ -137,4 +191,4 @@ Apache-2.0. See [LICENSE](LICENSE).
 
 ## Disclaimer
 
-This tool surfaces RBI source material; **it does not provide legal advice.** Use citations to inform compliance review, not replace it. RBI publications are subject to amendment without notice; this tool's "Updated as on" timestamps are best-effort.
+This tool surfaces RBI source material; **it does not provide legal advice.** Use citations to inform compliance review, not replace it. RBI publications are subject to amendment without notice; this tool's "Updated as on" and `last_updated_at` timestamps are best-effort. Always verify with a qualified compliance reviewer before acting on any provision returned.
