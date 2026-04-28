@@ -60,12 +60,16 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS documents (
-    document_id      TEXT PRIMARY KEY,    -- e.g., "rbi:master_direction:12550"
-    md_id            TEXT NOT NULL UNIQUE,
+    document_id      TEXT PRIMARY KEY,    -- e.g., "rbi:master_direction:12550" or "rbi:circular:12922"
+    md_id            TEXT NOT NULL UNIQUE,-- numeric RBI ID; named md_id for legacy reasons but used generically
     title            TEXT NOT NULL,
     detail_url       TEXT NOT NULL,
     last_updated_at  TEXT,                -- "Updated as on <date>" parsed from title; ISO 8601
-    department       TEXT,                -- v0.1: always NULL (page is JS-rendered for groupings)
+    issued_date      TEXT,                -- ISO 8601 date when the document was issued (from list page or PDF body)
+    rbi_ref          TEXT,                -- RBI reference number (e.g., "DOR.AML.REC.61/14.06.001/2025-26")
+    department       TEXT,                -- v0.1: always NULL for MDs (page is JS-rendered for groupings)
+    document_family  TEXT NOT NULL DEFAULT 'master_direction'
+                       CHECK (document_family IN ('master_direction', 'standalone_circular', 'notification', 'master_circular')),
     pdf_urls_json    TEXT NOT NULL DEFAULT '[]',
     status           TEXT NOT NULL DEFAULT 'current'
                        CHECK (status IN ('current', 'withdrawn', 'superseded', 'draft', 'unknown')),
@@ -76,6 +80,8 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_md_id ON documents(md_id);
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+-- idx_documents_family is created inside _migrate_schema after the column
+-- itself is added, so existing pre-migration databases don't fail here.
 
 CREATE TABLE IF NOT EXISTS withdrawn (
     -- Identity is the original circular's ID when known, else original_ref + title hash.
@@ -192,6 +198,7 @@ def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(SCHEMA_SQL)
+        _migrate_schema(conn)
         # Try to load sqlite-vec and create the virtual table. Both are
         # idempotent and silent on failure (logs a warning).
         if _load_sqlite_vec(conn):
@@ -203,6 +210,35 @@ def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
     finally:
         conn.commit()
         conn.close()
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Apply forward-only migrations for columns that didn't exist in earlier
+    schema revisions. SQLite's CREATE TABLE IF NOT EXISTS doesn't add columns
+    to a pre-existing table; we patch them in here.
+
+    Each ALTER TABLE is wrapped in try/except so re-running on a freshly-
+    created table (where the columns already exist) is a no-op. Cheap to run
+    on every connect.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    migrations: list[tuple[str, str]] = [
+        ("document_family", "ALTER TABLE documents ADD COLUMN document_family TEXT NOT NULL DEFAULT 'master_direction'"),
+        ("issued_date",     "ALTER TABLE documents ADD COLUMN issued_date TEXT"),
+        ("rbi_ref",         "ALTER TABLE documents ADD COLUMN rbi_ref TEXT"),
+    ]
+    for col, sql in migrations:
+        if col not in cols:
+            try:
+                conn.execute(sql)
+                logger.info("schema.migrate", added_column=col)
+            except sqlite3.OperationalError as exc:
+                logger.warning("schema.migrate_fail", column=col, error=str(exc))
+    # Backfill helpful index after the column exists.
+    import contextlib
+
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_family ON documents(document_family)")
 
 
 def init_db(db_path: str | Path) -> None:

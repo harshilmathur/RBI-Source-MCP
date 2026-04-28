@@ -123,9 +123,11 @@ def check_current(conn: sqlite3.Connection, url_or_ref: str) -> dict[str, Any]:
             ),
         }
 
-    # Branch 3: a notification / circular URL — check it against the withdrawn list.
-    # This is the real headline demo path: someone pastes a 2017 RBI URL, gets back
-    # a "withdrawn" verdict if the circular is in our corpus.
+    # Branch 3: a notification / circular URL.
+    # Lookup priority:
+    #   1. withdrawn list — definitive 'withdrawn'
+    #   2. active circulars in our corpus (standalone_circular / notification) — 'current'
+    #   3. neither — 'not_withdrawn' with a caveat that active coverage may be partial
     if NOTIF_URL_PATTERN.search(raw):
         parsed = urlparse(raw)
         qs = parse_qs(parsed.query)
@@ -137,6 +139,8 @@ def check_current(conn: sqlite3.Connection, url_or_ref: str) -> dict[str, Any]:
                 source_url=raw,
             )
         original_id = ids[0]
+
+        # Step 1: withdrawn list.
         row = find_withdrawn_by_original_id(conn, original_id)
         if row is not None:
             return {
@@ -149,14 +153,42 @@ def check_current(conn: sqlite3.Connection, url_or_ref: str) -> dict[str, Any]:
                 "replacement_ref": row["replacement_ref"],
                 "as_of": now,
                 "source_url": raw,
+                "note": "This circular is in RBI's withdrawn-circulars list.",
+            }
+
+        # Step 2: active circulars indexed under standalone_circular / notification.
+        active = conn.execute(
+            """
+            SELECT document_id, title, detail_url, rbi_ref, issued_date,
+                   document_family, last_seen_at
+            FROM documents
+            WHERE md_id = ?
+              AND document_family IN ('standalone_circular', 'notification')
+              AND status = 'current'
+            LIMIT 1
+            """,
+            (original_id,),
+        ).fetchone()
+        if active is not None:
+            return {
+                "status": "current",
+                "document_id": active["document_id"],
+                "title": active["title"],
+                "official_url": active["detail_url"],
+                "rbi_ref": active["rbi_ref"],
+                "issued_date": active["issued_date"],
+                "document_family": active["document_family"],
+                "withdrawn_date": None,
+                "replacement_ref": None,
+                "as_of": now,
+                "source_url": raw,
                 "note": (
-                    "This circular is in RBI's withdrawn-circulars list. "
-                    "Replacement reference and exact supersession chain ship at v1.0."
+                    "Found in our indexed active-circulars corpus. Last seen in the "
+                    f"source list on {active['last_seen_at']}."
                 ),
             }
-        # Not found in withdrawn list. v0.1 doesn't have the full active-circular
-        # corpus (only Master Directions), so we can't confirm it's CURRENT — we
-        # can only say it's not in our withdrawn list.
+
+        # Step 3: nothing matched. Honest about what we know vs. don't.
         return {
             "status": "not_withdrawn",
             "document_id": None,
@@ -165,11 +197,10 @@ def check_current(conn: sqlite3.Connection, url_or_ref: str) -> dict[str, Any]:
             "as_of": now,
             "source_url": raw,
             "note": (
-                "This circular is NOT in RBI's withdrawn-circulars list as of the "
-                "last refresh, so it likely remains active. v0.1 does not crawl the "
-                "active-circulars corpus, so we cannot definitively confirm 'current' "
-                "status — only that it has not been withdrawn. Active-circulars "
-                "coverage ships at v1.0."
+                "Not found in our indexed corpus (neither withdrawn list nor active "
+                "Standalone Circulars). The circular may be a general notification "
+                "we haven't indexed yet, or may have been issued before our crawl "
+                "window. Visit the official_url to read the source directly."
             ),
         }
 
