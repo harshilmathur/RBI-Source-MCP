@@ -52,3 +52,6 @@ Thumbs.db
 
 # Fly
 .fly/
+
+# gstack local artifacts (security reports, learnings)
+.gstack/
