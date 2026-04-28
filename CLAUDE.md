@@ -16,6 +16,9 @@ is load-bearing; do not change it without explicit user direction.
 ```
 src/rbi_source_mcp/
   ├─ server.py              MCP stdio server, registers 4 tools, wraps every response with disclaimer
+  ├─ server_http.py         Streamable-HTTP transport (Starlette ASGI app + uvicorn runner).
+  │                         Reuses _build_server() — same tools, same disclaimer wrap. Endpoints:
+  │                         /, /health, /mcp/ (note trailing slash).
   ├─ disclaimer.py          DISCLAIMER + LLM_INSTRUCTION constants. Wording is load-bearing.
   ├─ db.py                  SQLite schema, _migrate_schema, hybrid_search (FTS5 + sqlite-vec + RRF)
   ├─ check_current.py       Withdrawn/active lookup (3-step)
@@ -55,7 +58,8 @@ fly.toml                     Hosted-endpoint config; never been deployed
 ## Console scripts
 
 ```
-rbi-source-mcp                       Run the MCP server over stdio
+rbi-source-mcp                       Run the MCP server over stdio (local Claude Code)
+rbi-source-mcp-http [--host --port]  Run the MCP server over streamable HTTP (hosted)
 rbi-source-crawl                     Refresh MD list + withdrawn list
 rbi-source-index <md_id>             Index one Master Direction
 rbi-source-index-all                 Bulk-index all 342 Master Directions
@@ -137,8 +141,8 @@ quality has regressed and the build should fail. Currently 100% (25/25).
 
 | Area | Status |
 |---|---|
-| Hosted Fly endpoint | fly.toml ready; `fly launch` not run yet |
-| HTTP transport for hosted mode | Need an `mcp.streamable_http` wrapper around stdio server |
+| Hosted Fly endpoint | fly.toml updated; `fly launch` not run yet |
+| HTTP transport for hosted mode | ✓ landed — server_http.py + rbi-source-mcp-http console script |
 | Notifications archive (thousands of docs) | Year-by-year POST-form crawler not yet built |
 | `document_versions` (history) | Currently only stores current state |
 | Amendment chain extraction | Blocks `find_updates` + `trace_relationships` tools |

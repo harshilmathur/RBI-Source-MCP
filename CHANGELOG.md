@@ -4,6 +4,36 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.5.6 — streamable-HTTP transport
+
+- New `server_http.py` module — Starlette ASGI app wrapping the existing
+  `_build_server()` from `server.py` via `StreamableHTTPSessionManager`.
+  Same 4 tools, same disclaimer wrap, different transport.
+- New console script `rbi-source-mcp-http` runs uvicorn on the ASGI app.
+  Honors `$PORT` (Fly convention) and `$RBI_SOURCE_HOST`.
+- Three HTTP endpoints:
+  - `GET /` — corpus-stats banner (JSON, curl-friendly)
+  - `GET /health` — liveness probe for Fly + load balancers
+  - `POST /mcp/` — streamable-HTTP MCP endpoint (note trailing slash;
+    Starlette `Mount` issues a 307 from `/mcp` → `/mcp/`)
+- Permissive CORS on `/mcp/` (`allow_origins=*`) so browser-based MCP
+  clients can connect from a different origin.
+- `fly.toml` updated: `[http_service]` block live, `internal_port=8080`,
+  `auto_stop_machines=off`, `min_machines_running=1`, health check on
+  `/health` every 30s. Memory bumped from 256 MB → 1 GB (bge-small +
+  sentence-transformers + numpy + sqlite-vec push resident set to ~600
+  MB; the original 256 MB plan was too small).
+- `Dockerfile` default ENTRYPOINT switched to `rbi-source-mcp-http`
+  binding 0.0.0.0:8080. Stdio binary still in the image; override with
+  `docker run ... rbi-source-mcp` for local use.
+- 3 new tests in `test_http_server.py`: verify `/health`, `/`, and end-
+  to-end MCP tool call over HTTP returns the disclaimer-wrapped SSE
+  response. Uses `asgi-lifespan.LifespanManager` to drive the lifespan
+  context that initializes the session manager's task group.
+- New dev dep: `asgi-lifespan>=2.1.0`.
+
+68 tests passing (was 65); ruff clean.
+
 ### v0.5.5 — five content families indexed (current state)
 
 **Corpus state:**

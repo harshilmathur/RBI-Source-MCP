@@ -1,12 +1,13 @@
 # RBI Source MCP — Fly.io app config
 # Locked decisions from /plan-eng-review:
-#   - Single Fly machine, $5/mo shared-cpu-1x@256mb
+#   - Single Fly machine, shared-cpu-1x with 1 GB RAM (bge-small needs ~250 MB
+#     resident; sentence-transformers + numpy + sqlite-vec push to ~600 MB).
+#     The original 256 MB plan is too small for the embedding model — bumped
+#     to 1 GB on first deploy.
 #   - auto_stop_machines = false (TTHW <2min target can't afford cold starts)
-#   - 1GB volume at /data (corpus + telemetry + db-prev rollback)
-#   - SIGHUP-based atomic swap on weekly refresh
-#
-# App name will be set when the user picks the final hosted URL.
-# Until then, this file lives as a template; rename `app` and run `fly launch`.
+#   - 1 GB volume at /data (corpus is ~165 MB; rest reserved for db-prev,
+#     telemetry, raw-PDF cache)
+#   - SIGHUP-based atomic swap on weekly refresh runs from GitHub Actions
 
 app = "rbi-source-mcp"
 primary_region = "bom"  # Mumbai, closest to RBI source data + likely user base
@@ -17,48 +18,46 @@ primary_region = "bom"  # Mumbai, closest to RBI source data + likely user base
 [env]
   RBI_SOURCE_DB = "/data/db.sqlite"
   PYTHONUNBUFFERED = "1"
+  # PORT is set by Fly automatically; rbi-source-mcp-http honors $PORT.
 
 [[mounts]]
   source = "rbi_data"
   destination = "/data"
   initial_size = "1gb"
 
-# v0.1: stdio MCP only (no HTTP transport yet). When the HTTP wrapper lands,
-# uncomment the [[services]] block below.
-#
-# [[services]]
-#   protocol = "tcp"
-#   internal_port = 8080
-#   processes = ["app"]
-#   auto_stop_machines = false
-#   auto_start_machines = true
-#   min_machines_running = 1
-#
-#   [[services.ports]]
-#     port = 80
-#     handlers = ["http"]
-#     force_https = true
-#
-#   [[services.ports]]
-#     port = 443
-#     handlers = ["tls", "http"]
-#
-#   [services.concurrency]
-#     type = "requests"
-#     soft_limit = 50
-#     hard_limit = 100
+# v0.5+: HTTP transport. The container's ENTRYPOINT is rbi-source-mcp-http
+# (set in Dockerfile) which binds to 0.0.0.0:$PORT. Fly's anycast handles
+# TLS termination + global routing.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/health"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "1gb"
 
-# Process group — single MCP server process.
+# Process group — single MCP HTTP server process.
 [processes]
-  app = "rbi-source-mcp"
+  app = "rbi-source-mcp-http --host 0.0.0.0 --port 8080"
 
-# Deploy strategy: single-machine SIGHUP reload (per /plan-eng-review).
-# For v0.1 we deploy via standard `fly deploy`; the SIGHUP-based corpus
-# atomic swap is independent of code deploys and runs from the weekly
-# GitHub Action.
+# Deploy strategy: single-machine rolling restart (per /plan-eng-review).
+# Code deploys via fly deploy; corpus refresh is independent (weekly GH Action
+# scp's /data/db.sqlite.new and SIGHUPs the running process).
 [deploy]
   strategy = "rolling"
