@@ -102,13 +102,16 @@ def test_notification_url_for_withdrawn_circular_returns_withdrawn(db) -> None:
 
 
 def test_notification_url_for_active_circular_returns_not_withdrawn(db) -> None:
-    """Notification ID NOT in the withdrawn list → 'not_withdrawn' with caveat."""
+    """Notification ID NOT in the withdrawn list AND not in active corpus →
+    'not_withdrawn' with a caveat that the active corpus may not have full
+    coverage of all general notifications."""
     result = check_current(
         db,
         "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=99999",
     )
     assert result["status"] == "not_withdrawn"
-    assert "v1.0" in result["note"]
+    # The note explains we couldn't find it; consuming LLMs surface this caveat.
+    assert "not found" in result["note"].lower() or "haven't indexed" in result["note"].lower()
 
 
 def test_faq_url_returns_unsupported(db) -> None:
