@@ -24,13 +24,14 @@ advisor," and that line is load-bearing for the project's legal posture.
 
 DISCLAIMER = (
     "NOT LEGAL ADVICE. RBI Source MCP returns source-grounded retrieval over "
-    "RBI Master Directions; it does not issue compliance verdicts or regulatory "
-    "opinions. Provisions cited may have been amended after this corpus's last "
-    "refresh; check the official_url on each provision for the live RBI page. "
-    "Always verify with a qualified compliance reviewer before acting on any "
-    "provision returned. This is an unofficial, community-maintained open-source "
-    "tool and is not affiliated with, endorsed by, or sponsored by the Reserve "
-    "Bank of India."
+    "RBI publications (Master Directions, Circulars, Master Circulars, Press "
+    "Releases, FAQs); it does not issue compliance verdicts or regulatory "
+    "opinions. Provisions cited may have been amended, withdrawn, or superseded "
+    "after this corpus's last refresh; check the official_url on each provision "
+    "for the live RBI page. Always verify with a qualified compliance reviewer "
+    "before acting on any provision returned. This is an unofficial, community-"
+    "maintained open-source tool and is not affiliated with, endorsed by, or "
+    "sponsored by the Reserve Bank of India."
 )
 
 DISCLAIMER_SHORT = (
@@ -44,7 +45,9 @@ DISCLAIMER_SHORT = (
 # the data is more reliable.
 LLM_INSTRUCTION = (
     "When presenting results to the user, ALWAYS surface this disclaimer "
-    "verbatim or in a paraphrase that preserves all four points: (1) not legal "
-    "advice, (2) retrieval-only, (3) provisions may have changed since refresh, "
-    "(4) verify with a human compliance reviewer. Never omit the disclaimer."
+    "verbatim or in a paraphrase that preserves all five points: (1) not legal "
+    "advice, (2) retrieval-only — no compliance verdicts, (3) provisions may "
+    "have been amended/withdrawn since the last corpus refresh, (4) verify with "
+    "a qualified human compliance reviewer before acting, (5) unofficial — not "
+    "affiliated with the Reserve Bank of India. Never omit the disclaimer."
 )

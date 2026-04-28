@@ -44,6 +44,15 @@ logger = structlog.get_logger(__name__)
 _BANNER_TTL_SECONDS = 60.0
 _banner_cache: dict[str, object] = {"data": None, "ts": 0.0}
 
+# /health cache: Fly's readiness probe hits this every few seconds. The deep
+# health check opens a SQLite connection + verifies sqlite-vec loaded + counts
+# documents — that's ~10ms but adds up at probe cadence and contends with
+# real traffic. 30s cache is short enough that a real outage flips the probe
+# within one Fly health-check window. Separate cache from the banner because
+# the failure shapes differ (banner returns degraded JSON; health flips 503).
+_HEALTH_TTL_SECONDS = 30.0
+_health_cache: dict[str, object] = {"data": None, "status_code": 200, "ts": 0.0}
+
 
 def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> Starlette:
     """Build the Starlette ASGI app that serves the MCP over streamable HTTP.
@@ -78,8 +87,80 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         await session_manager.handle_request(scope, receive, send)
 
     async def health(_: Request) -> JSONResponse:
-        """Liveness probe used by Fly + load balancers."""
-        return JSONResponse({"status": "ok", "version": __version__})
+        """Readiness probe used by Fly + load balancers.
+
+        A bare process-up check isn't enough: the most common deploy failure
+        mode is the Fly volume not mounting (or mounting empty), in which
+        case the process is happily alive but every real request hits an
+        empty SQLite. With only a process check the deploy goes green; users
+        only learn it's broken when the first /mcp call returns errors.
+
+        Deep checks:
+          1. SQLite opens at the configured path.
+          2. The corpus has at least one indexed document (catches missing
+             volume, missing weekly refresh, etc.).
+          3. sqlite-vec loaded (degraded but not failed if not — dense
+             retrieval falls back to FTS5-only).
+
+        Result is cached for 30s so probe cadence doesn't thrash the DB.
+        Returns 503 on hard-failure (no DB / no documents) so Fly removes
+        the machine from the LB; returns 200 with `degraded: true` if only
+        sqlite-vec is missing.
+        """
+        now = time.time()
+        cached_data = _health_cache["data"]
+        cached_ts = float(_health_cache["ts"])  # type: ignore[arg-type]
+        if cached_data is not None and (now - cached_ts) < _HEALTH_TTL_SECONDS:
+            status_code = int(_health_cache["status_code"])  # type: ignore[arg-type]
+            return JSONResponse(cached_data, status_code=status_code)  # type: ignore[arg-type]
+
+        from .db import _load_sqlite_vec, connect
+
+        db_path = os.environ.get("RBI_SOURCE_DB", "./data/db.sqlite")
+        payload: dict[str, object] = {"version": __version__}
+        status_code = 200
+        try:
+            with connect(db_path) as conn:
+                doc_count = conn.execute("SELECT count(*) FROM documents").fetchone()[0]
+                # _load_sqlite_vec is idempotent and best-effort. connect()
+                # already attempted it; we re-check here so /health surfaces
+                # whether the running process has dense retrieval available.
+                vec_ok = _load_sqlite_vec(conn)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("health.db_unavailable", error=str(exc), exc_type=type(exc).__name__)
+            payload.update({"status": "unhealthy", "reason": "db_unavailable"})
+            status_code = 503
+        else:
+            if doc_count == 0:
+                # Volume mounted empty, or weekly refresh hasn't run yet.
+                # Either way: we'd fail every real request — flip 503 so Fly
+                # doesn't route to us.
+                payload.update(
+                    {
+                        "status": "unhealthy",
+                        "reason": "corpus_empty",
+                        "documents": 0,
+                    }
+                )
+                status_code = 503
+            elif not vec_ok:
+                # Dense retrieval unavailable but FTS5 sparse still works.
+                # Degraded, not down — stay in the LB.
+                payload.update(
+                    {
+                        "status": "ok",
+                        "degraded": True,
+                        "reason": "sqlite_vec_unavailable",
+                        "documents": int(doc_count),
+                    }
+                )
+            else:
+                payload.update({"status": "ok", "documents": int(doc_count)})
+
+        _health_cache["data"] = payload
+        _health_cache["status_code"] = status_code
+        _health_cache["ts"] = now
+        return JSONResponse(payload, status_code=status_code)
 
     async def banner(_: Request) -> JSONResponse:
         """Friendly landing for `curl <HOSTED_URL>/`. Surfaces corpus stats.

@@ -14,7 +14,7 @@ from rbi_source_mcp.server import _wrap_response
 
 
 def test_disclaimer_text_has_load_bearing_phrases() -> None:
-    """The disclaimer text must include all four points the project promises."""
+    """The disclaimer text must include all five points the project promises."""
     text = DISCLAIMER.lower()
     # 1. Not legal advice — capitalized in the source.
     assert "not legal advice" in text
@@ -28,19 +28,31 @@ def test_disclaimer_text_has_load_bearing_phrases() -> None:
     assert "not affiliated" in text and "reserve bank of india" in text
 
 
+def test_disclaimer_lists_all_corpus_families() -> None:
+    """v0.5.6+ corpus spans 5 families; the disclaimer must reflect that so
+    users aren't misled into thinking we only cover Master Directions."""
+    text = DISCLAIMER.lower()
+    assert "master directions" in text
+    assert "circulars" in text  # covers both 'circulars' and 'master circulars'
+    assert "press releases" in text
+    assert "faqs" in text
+
+
 def test_short_disclaimer_keeps_not_legal_advice() -> None:
     """The short form (used in logs / tool descriptions) must still lead with the warning."""
     assert "NOT LEGAL ADVICE" in DISCLAIMER_SHORT
     assert "compliance reviewer" in DISCLAIMER_SHORT.lower()
 
 
-def test_llm_instruction_names_all_four_points() -> None:
-    """LLM_INSTRUCTION enumerates the four points so consuming LLMs can preserve them."""
+def test_llm_instruction_names_all_five_points() -> None:
+    """LLM_INSTRUCTION enumerates the five points so consuming LLMs can preserve them."""
     text = LLM_INSTRUCTION.lower()
     assert "not legal advice" in text
     assert "retrieval-only" in text or "retrieval" in text
-    assert "may have changed" in text or "since refresh" in text
+    assert "amended" in text or "withdrawn" in text or "since" in text
     assert "compliance reviewer" in text or "human" in text
+    # 5th point: non-affiliation. Previously missing.
+    assert "unofficial" in text or "not affiliated" in text
 
 
 def test_wrap_response_injects_disclaimer_at_top() -> None:

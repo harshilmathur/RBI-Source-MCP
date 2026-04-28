@@ -73,9 +73,11 @@ def persist_document_and_chunks(
         return 0
 
     # Title quality fallback: prefer non-garbage new title; else keep existing
-    # if also non-garbage; else use a placeholder.
+    # if also non-garbage; else use a placeholder. Look up by (md_id, family)
+    # since md_id alone isn't unique across families.
     existing = conn.execute(
-        "SELECT title FROM documents WHERE md_id = ?", (md_id,)
+        "SELECT title FROM documents WHERE md_id = ? AND document_family = ?",
+        (md_id, document_family),
     ).fetchone()
     if not looks_like_date_or_header(title):
         kept_title = title
@@ -91,7 +93,7 @@ def persist_document_and_chunks(
             issued_date, rbi_ref, department, document_family,
             pdf_urls_json, status, first_seen_at, last_seen_at, raw_list_sha256
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(md_id) DO UPDATE SET
+        ON CONFLICT(md_id, document_family) DO UPDATE SET
             document_id = excluded.document_id,
             title = excluded.title,
             detail_url = excluded.detail_url,
@@ -122,9 +124,14 @@ def persist_document_and_chunks(
         ),
     )
 
-    # Idempotent chunk + vector replacement.
+    # Idempotent chunk + vector replacement. Scope by document_id rather than
+    # md_id alone — md_id is unique only within a family, so deleting by
+    # md_id would wipe a sibling family's chunks if they share the same
+    # numeric ID.
     old_rowids = [
-        r[0] for r in conn.execute("SELECT rowid FROM chunks WHERE md_id = ?", (md_id,))
+        r[0] for r in conn.execute(
+            "SELECT rowid FROM chunks WHERE document_id = ?", (document_id,)
+        )
     ]
     if old_rowids:
         placeholders = ",".join("?" for _ in old_rowids)
@@ -135,7 +142,7 @@ def persist_document_and_chunks(
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("persist.chunks_vec.delete_skip", error=str(exc))
-    conn.execute("DELETE FROM chunks WHERE md_id = ?", (md_id,))
+    conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
 
     try:
         embeddings = embed_texts([c.text for c in chunks])

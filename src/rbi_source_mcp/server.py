@@ -39,6 +39,16 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_DB_PATH = "./data/db.sqlite"
 
+# Hard cap on user-supplied free-text fields (`text` for check_compliance,
+# `query` for search, etc.). The MCP server runs single-process on Fly; a
+# multi-megabyte payload spent inside the embedder or FTS5 tokenizer would
+# block the asyncio event loop and starve other clients. 32 KB is plenty
+# for a clause-level compliance check (the README explicitly recommends
+# splitting larger documents into sections, typically <2000 chars). Inputs
+# longer than this are rejected with a structured error envelope rather
+# than truncated, so the LLM caller learns it sent too much.
+MAX_INPUT_LEN = 32_000
+
 
 def _resolve_db_path() -> Path:
     return Path(os.environ.get("RBI_SOURCE_DB", DEFAULT_DB_PATH)).expanduser().resolve()
@@ -57,6 +67,39 @@ def _wrap_response(payload: dict[str, Any]) -> dict[str, Any]:
         "_llm_instruction": LLM_INSTRUCTION,
         **payload,
     }
+
+
+def _input_too_large_response(tool_name: str, field: str, length: int) -> TextContent:
+    """Build a wrapped error envelope for an oversized free-text input.
+
+    Symmetric with `_error_response`: disclaimer fields at the top, structured
+    error body. The LLM caller learns which field was too long and what the
+    cap is, so it can split the input and retry.
+    """
+    logger.warning(
+        "tool.dispatch.input_too_large",
+        tool=tool_name,
+        field=field,
+        length=length,
+        cap=MAX_INPUT_LEN,
+    )
+    payload = _wrap_response(
+        {
+            "status": "error",
+            "reason": "input_too_large",
+            "tool": tool_name,
+            "field": field,
+            "length": length,
+            "max_length": MAX_INPUT_LEN,
+            "message": (
+                f"Input field '{field}' is {length} characters; the limit is "
+                f"{MAX_INPUT_LEN}. Split the input into smaller sections "
+                "(typically <2000 chars per section is recommended) and call "
+                "the tool once per section."
+            ),
+        }
+    )
+    return TextContent(type="text", text=json.dumps(payload, indent=2))
 
 
 def _error_response(tool_name: str, reason: str, exc: BaseException) -> TextContent:
@@ -108,7 +151,7 @@ def _build_server() -> Server:
                     "from the cited provisions and clearly mark it as 'not legal advice'. "
                     "Always include source URLs and paragraph anchors when summarizing for the user. "
                     "REQUIRED: every response includes a `_disclaimer` field; you MUST surface that "
-                    "disclaimer (verbatim or paraphrased preserving all four points) when presenting "
+                    "disclaimer (verbatim or paraphrased preserving all five points) when presenting "
                     "results to the user. Do not omit it."
                 ),
                 inputSchema={
@@ -249,11 +292,14 @@ def _build_server() -> Server:
         args = arguments or {}
 
         if name == "rbi.check_compliance":
+            text = args.get("text", "") or ""
+            if len(text) > MAX_INPUT_LEN:
+                return [_input_too_large_response(name, "text", len(text))]
             try:
                 with connect(db_path) as conn:
                     result = check_compliance(
                         conn,
-                        args.get("text", ""),
+                        text,
                         topic_hint=args.get("topic_hint"),
                         limit=int(args.get("limit", 5)),
                     )
@@ -262,11 +308,14 @@ def _build_server() -> Server:
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
         if name == "rbi.search":
+            query = args.get("query", "") or ""
+            if len(query) > MAX_INPUT_LEN:
+                return [_input_too_large_response(name, "query", len(query))]
             try:
                 with connect(db_path) as conn:
                     result = search(
                         conn,
-                        args.get("query", ""),
+                        query,
                         filters=args.get("filters") or {},
                         limit=int(args.get("limit", 5)),
                     )
