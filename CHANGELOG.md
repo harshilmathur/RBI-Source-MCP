@@ -4,6 +4,69 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.5.8 — first hosted deploy live
+
+The hosted endpoint is **live** at `https://rbi-source.harshil.ai/mcp/`
+(Fly.io single-machine in Mumbai, custom domain via Cloudflare DNS).
+
+**Deploy enablers:**
+- `Dockerfile` ENTRYPOINT changed to `/app/entrypoint.sh` (shim only).
+  The binary name lives in CMD, where `fly.toml`'s `[processes]` block
+  overrides it. Earlier mistake: baking the binary name into both
+  ENTRYPOINT and `[processes]` made Fly concatenate them and the
+  container boot-looped 10 times before giving up.
+- New entrypoint shim seeds `/data/db.sqlite` from `/app/initial-db.sqlite`
+  on first boot only. Fly's volume mount at `/data` would otherwise hide
+  any DB baked into the image. The shim is idempotent: subsequent boots
+  see the existing `/data/db.sqlite` and skip the copy.
+- New `.dockerignore` keeps the build context lean (excludes `data/`,
+  the venv, caches, tests). `db.sqlite.initial` at the repo root is
+  preserved for the seed.
+- `uv.lock` is now tracked for reproducible builds across local + CI +
+  Fly Docker layer.
+- Custom domain `rbi-source.harshil.ai` set up: A + AAAA records on
+  Cloudflare DNS pointing at Fly's shared v4 + dedicated v6 IPs. Fly
+  Let's-Encrypt cert auto-renews. Cloudflare proxy currently ON
+  (Universal SSL wildcard cert seen by clients) — gray-cloud direct
+  is documented as the alternative if the extra hop becomes a
+  latency concern.
+
+### v0.5.7 — outside-voice (codex) review fixes + schema hardening
+
+5 real issues caught by `/codex review` that the gstack `/review`
+missed. All fixed; 1 deferred; 2 declined as intentional.
+
+- **Compound `UNIQUE(md_id, document_family)`.** Original column-level
+  `UNIQUE(md_id)` would silently overwrite cross-family collisions.
+  Migration v3 rebuilds legacy DBs with FK enforcement disabled, runs
+  `foreign_key_check` after to surface orphans. All 3 `ON CONFLICT(md_id)`
+  call sites updated to compound. `find_md_by_id(conn, md_id, family=...)`
+  now family-scoped. Chunk DELETE/SELECT scoped by `document_id`
+  (already family-prefixed) so a sibling family's chunks survive when
+  one family is re-indexed. Verified on the live 803-doc / 56,653-chunk
+  corpus: migration fired once, all rows preserved, idempotent on
+  re-open. New `tests/test_schema_compound_key.py` (4 tests).
+- **FK-safe migration v2.** The earlier CHECK-drop rebuild ran
+  `DROP TABLE documents` with FKs ON — would fail on any DB with
+  chunks already indexed. Wrap with `PRAGMA foreign_keys = OFF/ON`
+  + `foreign_key_check` after.
+- **Deep `/health`.** Was a process-up ping; now opens SQLite, counts
+  documents, re-attempts sqlite-vec load. 503 on `corpus_empty` (LB
+  removes the machine), 200 with `degraded: true` if sqlite-vec missing
+  but FTS5 still works. 30s cache on result.
+- **Input size cap.** `MAX_INPUT_LEN = 32_000` enforced on `text` and
+  `query`. Returns wrapped `input_too_large` envelope (disclaimer
+  preserved at top) so the LLM caller knows to split + retry.
+  Prevents event-loop blocking on huge payloads.
+- **Disclaimer text — five points, all five families.** Earlier text
+  only mentioned "RBI Master Directions"; corpus now spans 5 families
+  (Master Directions, Circulars, Master Circulars, Press Releases,
+  FAQs). `LLM_INSTRUCTION` now enumerates 5 points (the
+  non-affiliation point was missing). Test
+  `test_disclaimer_lists_all_corpus_families` guards corpus coverage.
+
+77 tests passing (was 72: +4 compound-key, +1 family-coverage). Ruff clean.
+
 ### v0.5.6 — streamable-HTTP transport
 
 - New `server_http.py` module — Starlette ASGI app wrapping the existing
