@@ -53,6 +53,9 @@ rbi-source-index = "rbi_source_mcp.indexer.build_md_index:main"
 rbi-source-index-all = "rbi_source_mcp.indexer.build_all:main"
 rbi-source-index-circular = "rbi_source_mcp.indexer.build_circular_index:main"
 rbi-source-index-all-circulars = "rbi_source_mcp.indexer.build_all_circulars:main"
+rbi-source-index-press-release = "rbi_source_mcp.indexer.build_press_release_index:main"
+rbi-source-index-faq = "rbi_source_mcp.indexer.build_faq_index:main"
+rbi-source-index-master-circular = "rbi_source_mcp.indexer.build_master_circular_index:main"
 rbi-source-eval = "rbi_source_mcp.eval.runner:main"
 
 [build-system]
