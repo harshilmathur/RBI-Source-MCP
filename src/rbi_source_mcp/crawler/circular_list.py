@@ -98,18 +98,29 @@ def parse_list_html(html: str, base_url: str = LIST_URL) -> list[StandaloneCircu
     """Parse the list HTML into StandaloneCircular records.
 
     Anchor on rows that contain a NotificationUser.aspx?Id= link. Skip the
-    header row (which has the same URL as a "Notifications" nav link but no
-    real Id). For valid rows: cells[0]=serial, cells[1]=ref, cells[2]=date,
-    cells[3]=title.
+    header row + the navigation-index row (which has many anchors crammed
+    into one big <tr>; we filter that out by requiring exactly 1 anchor per
+    row).
+
+    For real data rows the cell layout is:
+        cells[0]=serial number, cells[1]=RBI reference,
+        cells[2]=title (full subject line), cells[3]=date.
+
+    Defensive: if cells[2] looks like a date and cells[3] doesn't, we swap
+    the assignments — protects against future layout changes on the page.
     """
     soup = BeautifulSoup(html, "lxml")
     seen_ids: set[str] = set()
     results: list[StandaloneCircular] = []
 
     for tr in soup.find_all("tr"):
-        anchor = tr.find("a", href=lambda h: h and "NotificationUser.aspx?" in h)
-        if not anchor:
+        anchors = [a for a in tr.find_all("a", href=True)
+                   if "NotificationUser.aspx?" in a.get("href", "")]
+        # Skip the navigation-index row (272nd <tr>) which has 271 anchors
+        # crammed into a single <tr>. Real data rows have exactly 1.
+        if len(anchors) != 1:
             continue
+        anchor = anchors[0]
         m = NOTIF_ID_PATTERN.search(anchor.get("href", ""))
         if not m:
             continue
@@ -122,12 +133,23 @@ def parse_list_html(html: str, base_url: str = LIST_URL) -> list[StandaloneCircu
             continue
 
         ref = _clean(cells[1].get_text(" ", strip=True))
-        date_text = _clean(cells[2].get_text(" ", strip=True))
-        title = _clean(cells[3].get_text(" ", strip=True))
+        c2 = _clean(cells[2].get_text(" ", strip=True))
+        c3 = _clean(cells[3].get_text(" ", strip=True))
+
+        # Defensive: detect if the columns are swapped (date in c2, title in c3).
+        c2_is_date = _parse_date(c2) is not None and len(c2) < 30
+        c3_is_date = _parse_date(c3) is not None and len(c3) < 30
+        if c2_is_date and not c3_is_date:
+            title, date_text = c3, c2  # swap
+        else:
+            title, date_text = c2, c3  # canonical
+
         if not ref or not title:
             continue
-        # Header row's "ref" cell often says "Circular Number"; skip.
+        # Header row sanity-skip.
         if ref.lower() in {"circular number", "ref no."}:
+            continue
+        if title.lower() in {"circular name/title", "subject"}:
             continue
 
         detail_url = _canonicalize_url(urljoin(base_url, anchor.get("href", "")))
