@@ -1,0 +1,48 @@
+# Keep the build context lean. The seed file `db.sqlite.initial` at the
+# repo root IS needed for first-deploy bootstrap (baked into the image),
+# but the working `data/` directory (171 MB+ live DB plus journal/wal/shm
+# files) must NOT ship — the volume at /data takes over at runtime and
+# the entrypoint shim seeds it from /app/initial-db.sqlite when empty.
+
+.git
+.github
+.venv
+venv
+env
+
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Crawler scratch — huge and not needed in the image
+data/
+raw_html/
+raw_pdfs/
+*.pdf
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+
+# Local docs / scratch
+*.md.bak
+.fly
+fly.toml
+.env
+.env.local
+
+# Tests aren't needed in the runtime image
+tests/
+
+# Local checkpoints / dumps
+*.dump
+db.sqlite
+db-prev.sqlite*
+telemetry.jsonl*
