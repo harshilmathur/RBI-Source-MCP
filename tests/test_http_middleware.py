@@ -44,6 +44,33 @@ async def test_request_exceeding_body_cap_rejected_with_413() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mcp_no_trailing_slash_does_not_redirect() -> None:
+    """Claude.ai's connector posts to /mcp (no slash) carrying the bearer
+    token AFTER OAuth, but doesn't follow 307 redirects. The path must
+    work directly without a redirect, otherwise the token never arrives
+    at the handler and Claude.ai bails with 'Authorization with the MCP
+    server failed.'"""
+    from rbi_source_mcp.server_http import build_asgi_app
+
+    app = build_asgi_app(stateless=True)
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post(
+                "/mcp",  # ← no trailing slash
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "MCP-Protocol-Version": "2024-11-05",
+                },
+                follow_redirects=False,
+            )
+    assert r.status_code == 200, f"got {r.status_code}: expected 200 (no redirect)"
+    assert "rbi.search" in r.text or "tools" in r.text, "tools/list response not received"
+
+
+@pytest.mark.asyncio
 async def test_request_within_body_cap_passes_middleware() -> None:
     """A small payload under the cap must pass the middleware. Asserts the
     body-size check doesn't accidentally reject normal traffic. We hit

@@ -74,6 +74,35 @@ RATE_LIMIT_PER_WINDOW = 60
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 
+class _NormalizeMcpPath:
+    """ASGI-level middleware: rewrite /mcp to /mcp/ in the scope.
+
+    Why ASGI-level instead of Starlette HTTP middleware: this needs to
+    run BEFORE Starlette's routing, since the goal is to make Starlette
+    see /mcp/ rather than redirect /mcp → /mcp/. Starlette's
+    BaseHTTPMiddleware runs AFTER routing.
+
+    Why this exists: Claude.ai's connector posts to /mcp (no trailing
+    slash) carrying the bearer token after OAuth. It does not follow
+    307 redirects, so the token never reaches the handler. We rewrite
+    the path in the scope, transparently, so the request lands on the
+    streamable-HTTP session manager directly with the bearer intact.
+
+    Side benefit: any other client that drops the trailing slash also
+    works without redirect, e.g., curl pipes that don't use -L.
+    """
+
+    def __init__(self, app) -> None:  # noqa: ANN001
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: ANN001
+        if scope.get("type") == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+            scope["raw_path"] = b"/mcp/"
+        await self.app(scope, receive, send)
+
+
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     """Reject requests with Content-Length above the cap before the body is
     parsed. Two paths:
@@ -425,6 +454,19 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         ],
         lifespan=lifespan,
     )
+
+    # Claude.ai's connector POSTs to /mcp (no trailing slash) WITH the
+    # bearer token AFTER the OAuth ceremony completes, but doesn't follow
+    # Starlette's 307 redirect to /mcp/. Effect: the bearer never reaches
+    # the MCP handler, Claude.ai retries the OAuth flow ~3-4x, then bails
+    # with "Authorization with the MCP server failed."
+    #
+    # Just disabling redirect_slashes isn't enough — Starlette's Mount
+    # strips its prefix, and a request to /mcp leaves scope.path="" which
+    # the streamable-HTTP session manager 404s on. The fix is an
+    # ASGI-level path rewrite: turn /mcp into /mcp/ in the scope BEFORE
+    # routing sees it. No redirect, no 307, the bearer flows through.
+    app.add_middleware(_NormalizeMcpPath)
 
     # Middleware order (Starlette runs these in REVERSE order of add_middleware
     # — last added = outermost = runs first). We want:
