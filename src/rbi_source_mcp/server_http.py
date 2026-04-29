@@ -35,6 +35,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from . import __version__
+from . import oauth as _oauth
 from .server import _build_server
 
 logger = structlog.get_logger(__name__)
@@ -130,7 +131,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         *,
         limit: int = RATE_LIMIT_PER_WINDOW,
         window_s: float = RATE_LIMIT_WINDOW_SECONDS,
-        excluded_paths: tuple[str, ...] = ("/health", "/"),
+        excluded_paths: tuple[str, ...] = (
+            "/health",
+            "/",
+            # OAuth ceremonial endpoints. Claude.ai's connector flow hits
+            # the discovery+register+authorize+token sequence multiple
+            # times per connection setup; if those count against the
+            # per-IP 60/min budget, real MCP traffic immediately after
+            # gets rate-limited. Exempt them — they're cheap, idempotent,
+            # and not the cost-amp risk we sized the limit for.
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-authorization-server",
+            "/register",
+            "/authorize",
+            "/token",
+        ),
     ) -> None:
         super().__init__(app)
         self.limit = limit
@@ -149,10 +164,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next):  # noqa: ANN001
-        # Exempt liveness probes and the curl-friendly banner.
-        if request.url.path in self.excluded_paths or any(
-            request.url.path.startswith(p) for p in ("/health",)
-        ):
+        # Exempt liveness probes, the curl-friendly banner, and the OAuth
+        # ceremonial endpoints. We use prefix-startswith for /.well-known/
+        # since Claude.ai also probes /.well-known/oauth-protected-resource/mcp.
+        path = request.url.path
+        if path in self.excluded_paths or path.startswith("/.well-known/"):
             return await call_next(request)
 
         ip = self._client_ip(request)
@@ -382,6 +398,29 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         routes=[
             Route("/", banner),
             Route("/health", health),
+            # OAuth 2.1 ceremonial endpoints. Claude.ai's connector flow
+            # walks RFC 8414 + RFC 9728 + RFC 7591 BEFORE attempting the
+            # MCP handshake; if these 404, the connector says "Couldn't
+            # reach the MCP server" even though /mcp/ itself works fine.
+            # See src/rbi_source_mcp/oauth.py for the full rationale.
+            Route(
+                "/.well-known/oauth-protected-resource",
+                _oauth.protected_resource_metadata,
+                methods=["GET"],
+            ),
+            Route(
+                "/.well-known/oauth-protected-resource/mcp",
+                _oauth.protected_resource_metadata,
+                methods=["GET"],
+            ),
+            Route(
+                "/.well-known/oauth-authorization-server",
+                _oauth.authorization_server_metadata,
+                methods=["GET"],
+            ),
+            Route("/register", _oauth.register_client, methods=["POST"]),
+            Route("/authorize", _oauth.authorize, methods=["GET"]),
+            Route("/token", _oauth.token, methods=["POST"]),
             Mount("/mcp", app=handle_mcp),
         ],
         lifespan=lifespan,
