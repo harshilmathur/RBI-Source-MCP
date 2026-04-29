@@ -1,0 +1,828 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RBI Source MCP — RBI corpus, citation-first, in your AI workflow</title>
+<meta name="description" content="A hosted MCP (Model Context Protocol) server that returns Reserve Bank of India regulatory citations for any MCP-capable client. Public, retrieval-only, citation-first.">
+<meta name="theme-color" content="#faf6ed">
+<meta property="og:title" content="RBI Source MCP">
+<meta property="og:description" content="The entire RBI corpus, version-aware, citation-first, in your AI workflow.">
+<meta property="og:url" content="https://rbi-source.harshil.ai/">
+<meta property="og:type" content="website">
+
+<style>
+  /* ---------- Design tokens (B4 — Modern ledger) ---------- */
+  :root {
+    --bg: #faf6ed;
+    --bg-panel: #f4eedf;
+    --bg-code: #f2ecdb;
+    --ink: #1e2a4a;
+    --ink-strong: #16213d;
+    --ink-muted: #4a5878;
+    --accent: #8b1e1e;
+    --accent-soft: #b13a3a;
+    --rule: #c9a85c;
+    --rule-faint: #d9c89a;
+
+    --serif: "Source Serif Pro", "Charter", "Iowan Old Style", "Apple Garamond",
+             "Georgia", "Times New Roman", serif;
+    --mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", "Menlo", "Consolas",
+            ui-monospace, monospace;
+
+    --content: 720px;
+    --wide: 1080px;
+
+    --gap-section: clamp(64px, 12vw, 128px);
+  }
+
+  /* ---------- Reset / base ---------- */
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.7;
+    font-feature-settings: "kern", "liga", "onum";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+  a:hover { color: var(--accent-soft); }
+
+  ::selection { background: var(--rule); color: var(--ink-strong); }
+
+  code, pre, .mono, .url-pill, .install-cmd, .stat-num {
+    font-family: var(--mono);
+    font-feature-settings: "tnum", "zero";
+  }
+
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--rule-faint);
+    border-radius: 4px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-size: 13.5px;
+    line-height: 1.55;
+    margin: 0;
+    color: var(--ink-strong);
+  }
+  pre, code { tab-size: 2; }
+  :not(pre) > code {
+    background: var(--bg-code);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.92em;
+  }
+
+  /* ---------- Layout ---------- */
+  .wrap { max-width: var(--content); margin: 0 auto; padding: 0 24px; }
+  .wrap-wide { max-width: var(--wide); margin: 0 auto; padding: 0 24px; }
+
+  section { padding-top: var(--gap-section); padding-bottom: 0; }
+  section:last-of-type { padding-bottom: var(--gap-section); }
+
+  hr.rule {
+    border: 0;
+    height: 1px;
+    background: var(--rule);
+    margin: 0;
+    max-width: var(--wide);
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  /* ---------- Top nav ---------- */
+  .top {
+    position: sticky; top: 0; z-index: 50;
+    background: var(--bg);
+    border-bottom: 1px solid var(--rule-faint);
+    padding: 14px 0;
+    backdrop-filter: saturate(1.1);
+  }
+  .top-inner {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding: 0 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .top-name {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 16px;
+    letter-spacing: 0.01em;
+    color: var(--ink-strong);
+    text-decoration: none;
+  }
+  .top-name .dot { color: var(--accent); }
+  .top-links { display: flex; gap: 22px; align-items: center; font-size: 14px; }
+  .top-links a {
+    color: var(--ink-muted);
+    text-decoration: none;
+  }
+  .top-links a:hover { color: var(--accent); }
+  .top-pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-muted);
+    border: 1px solid var(--rule-faint);
+    padding: 3px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .top-pill .live {
+    display: inline-block;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #2f7a3e;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  /* ---------- Disclaimer banner (top, slim) ---------- */
+  .banner {
+    background: #fbeed8;
+    border-bottom: 1px solid var(--rule);
+    color: var(--ink-strong);
+    font-size: 13.5px;
+    padding: 9px 24px;
+    text-align: center;
+  }
+  .banner strong {
+    color: var(--accent);
+    font-variant: small-caps;
+    letter-spacing: 0.06em;
+    margin-right: 8px;
+  }
+  .banner a { color: var(--ink-strong); }
+
+  /* ---------- Hero ---------- */
+  .hero { padding-top: clamp(72px, 14vw, 144px); }
+  .hero h1 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: clamp(44px, 8vw, 64px);
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+    margin: 0 0 16px;
+    color: var(--ink-strong);
+  }
+  .hero .tagline {
+    font-style: italic;
+    font-size: clamp(19px, 2.6vw, 22px);
+    line-height: 1.45;
+    color: var(--ink-muted);
+    margin: 0 0 36px;
+    max-width: 620px;
+  }
+  .hero-cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+    margin-top: 32px;
+  }
+  .url-row {
+    display: flex;
+    align-items: stretch;
+    flex: 1 1 360px;
+    border: 1px solid var(--rule-faint);
+    border-radius: 4px;
+    background: var(--bg-code);
+    overflow: hidden;
+    max-width: 560px;
+  }
+  .url-row code {
+    flex: 1;
+    padding: 10px 14px;
+    background: transparent;
+    border: 0;
+    font-size: 14px;
+    color: var(--ink-strong);
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .url-row .copy {
+    border: 0;
+    border-left: 1px solid var(--rule-faint);
+    background: transparent;
+    color: var(--ink-muted);
+    font-family: var(--serif);
+    font-size: 13px;
+    padding: 0 16px;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+  }
+  .url-row .copy:hover { color: var(--accent); background: rgba(139, 30, 30, 0.04); }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--accent);
+    color: #fcf5e8;
+    text-decoration: none;
+    padding: 11px 22px;
+    border-radius: 4px;
+    font-family: var(--serif);
+    font-size: 16px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    border: 1px solid var(--accent);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .btn:hover { background: #6f1717; color: #fcf5e8; }
+  .btn .arrow { font-size: 14px; opacity: 0.85; }
+
+  /* ---------- Trust strip ---------- */
+  .trust {
+    margin-top: 28px;
+    font-size: 13.5px;
+    color: var(--ink-muted);
+    letter-spacing: 0.02em;
+  }
+  .trust span { white-space: nowrap; }
+  .trust .sep { margin: 0 10px; color: var(--rule); }
+
+  /* ---------- Section heading ---------- */
+  h2 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 32px;
+    line-height: 1.25;
+    letter-spacing: -0.005em;
+    margin: 0 0 24px;
+    color: var(--ink-strong);
+  }
+  h3 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 19px;
+    line-height: 1.35;
+    margin: 0 0 8px;
+    color: var(--ink-strong);
+  }
+  p { margin: 0 0 16px; }
+  p:last-child { margin-bottom: 0; }
+
+  /* ---------- Stat strip ---------- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    margin: 16px 0 24px;
+  }
+  .stat {
+    padding: 22px 18px;
+    text-align: left;
+    border-right: 1px solid var(--rule-faint);
+  }
+  .stat:last-child { border-right: 0; }
+  .stat-num {
+    font-family: var(--mono);
+    font-feature-settings: "tnum";
+    font-size: 28px;
+    font-weight: 500;
+    color: var(--ink-strong);
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+  }
+  .stat-label {
+    font-size: 12.5px;
+    color: var(--ink-muted);
+    margin-top: 6px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .stat-sub {
+    font-size: 12px;
+    color: var(--ink-muted);
+    margin-top: 3px;
+    font-feature-settings: "tnum";
+  }
+  .stats-total {
+    text-align: right;
+    color: var(--ink-muted);
+    font-size: 14px;
+    margin-top: 6px;
+  }
+  .stats-total strong {
+    color: var(--ink-strong);
+    font-feature-settings: "tnum";
+    font-weight: 500;
+  }
+
+  /* ---------- Tools 2x2 grid ---------- */
+  .tools {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    border-top: 1px solid var(--rule);
+    border-left: 1px solid var(--rule-faint);
+  }
+  .tool {
+    padding: 22px 24px;
+    border-right: 1px solid var(--rule-faint);
+    border-bottom: 1px solid var(--rule-faint);
+  }
+  .tool:nth-child(2n) { border-right: 1px solid var(--rule); }
+  .tool h3 { font-family: var(--mono); font-size: 15px; font-weight: 500; }
+  .tool .args {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-muted);
+    margin: 0 0 12px;
+    word-break: break-word;
+  }
+  .tool p { font-size: 15px; line-height: 1.55; color: var(--ink); }
+  .tool .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-left: 6px;
+    letter-spacing: 0.06em;
+    vertical-align: middle;
+  }
+
+  /* ---------- Tables (corpus & install) ---------- */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14.5px;
+    line-height: 1.55;
+  }
+  thead th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--ink-muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: 11.5px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--rule-faint);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: 1px solid var(--rule); }
+  tbody td.num { text-align: right; font-feature-settings: "tnum"; font-family: var(--mono); }
+  tbody tr.total td { font-weight: 500; color: var(--ink-strong); border-top: 1px solid var(--rule); }
+  tbody tr.total td.num { color: var(--accent); }
+
+  .install code {
+    font-size: 13px;
+    background: transparent;
+    padding: 0;
+    color: var(--ink-strong);
+    word-break: break-word;
+  }
+  .install td:first-child { white-space: nowrap; font-weight: 500; color: var(--ink-strong); }
+
+  /* ---------- Sample interaction ---------- */
+  .pair { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 800px) { .pair { grid-template-columns: 1fr 1fr; gap: 20px; } }
+  .pair > div h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.07em;
+                   color: var(--ink-muted); margin: 0 0 8px; font-weight: 500; }
+
+  /* ---------- Architecture bullets ---------- */
+  .arch ul { padding-left: 0; list-style: none; margin: 0; }
+  .arch li {
+    padding: 12px 0 12px 28px;
+    border-top: 1px solid var(--rule-faint);
+    position: relative;
+  }
+  .arch li:first-child { border-top: 1px solid var(--rule); }
+  .arch li:last-child  { border-bottom: 1px solid var(--rule); }
+  .arch li::before {
+    content: "§";
+    position: absolute;
+    left: 0; top: 12px;
+    color: var(--accent);
+    font-family: var(--serif);
+    font-style: italic;
+  }
+
+  /* ---------- Disclaimer block (in body, repeated) ---------- */
+  .disclaimer {
+    background: #fbeed8;
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--accent);
+    padding: 26px 28px;
+    margin: 0;
+  }
+  .disclaimer .lead {
+    color: var(--accent);
+    font-variant: small-caps;
+    letter-spacing: 0.08em;
+    font-weight: 500;
+    margin-right: 8px;
+  }
+  .disclaimer ol {
+    margin: 14px 0 0;
+    padding-left: 22px;
+  }
+  .disclaimer li { padding: 4px 0; }
+  .disclaimer li::marker { color: var(--accent); font-weight: 500; }
+
+  /* ---------- Footer ---------- */
+  footer {
+    border-top: 1px solid var(--rule);
+    margin-top: var(--gap-section);
+    padding: 32px 0 48px;
+    color: var(--ink-muted);
+    font-size: 13.5px;
+  }
+  footer .foot-inner {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding: 0 24px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 16px 32px;
+  }
+  footer a { color: var(--ink-muted); }
+  footer a:hover { color: var(--accent); }
+  footer .tm { font-style: italic; font-size: 12.5px; }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 720px) {
+    .stats { grid-template-columns: repeat(2, 1fr); border-bottom: 0; }
+    .stat:nth-last-child(-n+2) { border-bottom: 1px solid var(--rule-faint); }
+    .stats { border-bottom: 1px solid var(--rule); }
+    .tools { grid-template-columns: 1fr; }
+    .tool, .tool:nth-child(2n) { border-right: 1px solid var(--rule); }
+  }
+
+  /* ---------- Reduced motion ---------- */
+  @media (prefers-reduced-motion: reduce) {
+    .btn, .url-row .copy, .top-links a { transition: none; }
+  }
+
+  /* ---------- Print ---------- */
+  @media print {
+    .top, .banner, .url-row .copy, .btn { display: none; }
+    body { background: white; color: black; }
+    a { color: black; text-decoration: underline; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Top disclaimer banner: cannot be missed even before scrolling -->
+<div class="banner" role="alert">
+  <strong>NOT LEGAL ADVICE.</strong>
+  Source-grounded retrieval over RBI publications. Verify every citation with a qualified compliance reviewer.
+  <a href="#disclaimer">Read the full disclaimer →</a>
+</div>
+
+<header class="top" role="banner">
+  <div class="top-inner">
+    <a href="/" class="top-name">RBI Source MCP<span class="dot">.</span></a>
+    <nav class="top-links" aria-label="Primary">
+      <span class="top-pill" title="Live in Mumbai (bom region)"><span class="live"></span>Live · BOM</span>
+      <a href="#install">Install</a>
+      <a href="#tools">Tools</a>
+      <a href="#sample">API</a>
+      <a href="https://github.com/harshilmathur/RBI-Source-MCP" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================================ -->
+<!-- 1. HERO                                                       -->
+<!-- ============================================================ -->
+<section class="hero">
+  <div class="wrap">
+    <h1>RBI Source MCP</h1>
+    <p class="tagline">The entire RBI corpus, version-aware, citation-first, in your AI workflow.</p>
+
+    <div class="hero-cta">
+      <div class="url-row" aria-label="MCP endpoint URL">
+        <code id="mcp-url">https://rbi-source.harshil.ai/mcp/</code>
+        <button class="copy" data-copy="#mcp-url" type="button" aria-label="Copy MCP URL">Copy</button>
+      </div>
+      <a href="#install" class="btn">Install in 30s <span class="arrow">↓</span></a>
+    </div>
+
+    <p class="trust" aria-label="Project attributes">
+      <span>Unofficial</span><span class="sep">·</span>
+      <span>Retrieval-only</span><span class="sep">·</span>
+      <span>Citation-first</span><span class="sep">·</span>
+      <span>Apache-2.0</span><span class="sep">·</span>
+      <span>Live in Mumbai</span>
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 3. WHAT IT DOES                                               -->
+<!-- ============================================================ -->
+<section id="what">
+  <div class="wrap">
+    <h2>What it does</h2>
+    <p>Fintech builders writing a clause, PRD section, or partner agreement currently ping their compliance team in Slack and wait hours-to-days. Or they Google <code>rbi.org.in</code>, land on an ASP.NET page that may or may not be a withdrawn circular, and ship against rules superseded three years ago.</p>
+    <p>RBI Source MCP collapses that loop. Paste a clause or section into Claude, ChatGPT, or Cursor with this MCP connected, and you get back the relevant Reserve Bank of India provisions with citations: paragraph anchor, official URL, RBI reference number, last-updated date, current/withdrawn status.</p>
+    <p><em>Retrieval-only by design.</em> The MCP doesn't issue compliance verdicts. The LLM consuming the tool synthesizes from the cited provisions; the user decides. Verify every result with a qualified compliance reviewer before acting.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 4. CORPUS COVERAGE                                            -->
+<!-- ============================================================ -->
+<section id="corpus">
+  <div class="wrap-wide">
+    <div class="wrap" style="padding:0;">
+      <h2>Corpus coverage</h2>
+      <p>Hybrid retrieval over five families of RBI publications. FTS5 (BM25 sparse) fused with sqlite-vec (<code>bge-small-en-v1.5</code> 384-dim dense) via Reciprocal Rank Fusion, k=60.</p>
+    </div>
+
+    <div class="stats" role="list" aria-label="Corpus by family">
+      <div class="stat" role="listitem">
+        <div class="stat-num">342</div>
+        <div class="stat-label">Master Directions</div>
+        <div class="stat-sub">50,088 chunks</div>
+      </div>
+      <div class="stat" role="listitem">
+        <div class="stat-num">290</div>
+        <div class="stat-label">Standalone Circulars</div>
+        <div class="stat-sub">1,532 chunks</div>
+      </div>
+      <div class="stat" role="listitem">
+        <div class="stat-num">98</div>
+        <div class="stat-label">FAQs</div>
+        <div class="stat-sub">1,828 chunks</div>
+      </div>
+      <div class="stat" role="listitem">
+        <div class="stat-num">54</div>
+        <div class="stat-label">Press Releases</div>
+        <div class="stat-sub">357 chunks</div>
+      </div>
+      <div class="stat" role="listitem">
+        <div class="stat-num">19</div>
+        <div class="stat-label">Master Circulars</div>
+        <div class="stat-sub">2,848 chunks</div>
+      </div>
+    </div>
+
+    <p class="stats-total">Total <strong>803</strong> documents · <strong>56,653</strong> indexed chunks · plus <strong>9,908</strong> withdrawn-circular records for <code>rbi_check_current</code> lookup</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 5. TOOLS                                                      -->
+<!-- ============================================================ -->
+<section id="tools">
+  <div class="wrap-wide">
+    <div class="wrap" style="padding:0;">
+      <h2>Tools</h2>
+      <p>Four MCP tools. Every response carries the disclaimer at the top of the JSON envelope, success path and error path alike.</p>
+    </div>
+
+    <div class="tools">
+      <article class="tool">
+        <h3>rbi_check_compliance <span class="badge">HEADLINE</span></h3>
+        <p class="args">(text, topic_hint?, limit?)</p>
+        <p>Paste a clause, PRD section, or draft policy paragraph, get back ranked relevant RBI provisions with full citations. Topic hints bias retrieval (PA, KYC, PPI, cards, e-mandate, AFA).</p>
+      </article>
+      <article class="tool">
+        <h3>rbi_search</h3>
+        <p class="args">(query, filters?, limit?)</p>
+        <p>Direct keyword/topic retrieval. For when you have a clean query like "net-worth requirements for PAs" rather than a clause to compliance-check.</p>
+      </article>
+      <article class="tool">
+        <h3>rbi_get_document</h3>
+        <p class="args">(document_id, include_text?, as_of?)</p>
+        <p>Fetch a document's metadata and table of contents (chunk anchors, sections, page numbers). Optionally include the full assembled body text.</p>
+      </article>
+      <article class="tool">
+        <h3>rbi_check_current</h3>
+        <p class="args">(url_or_ref)</p>
+        <p>Paste an RBI URL, learn whether it's current, withdrawn, or out-of-corpus. Three-step lookup: withdrawn list → active corpus → not-withdrawn-with-caveat. Never silently fails.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 6. INSTALL MATRIX                                             -->
+<!-- ============================================================ -->
+<section id="install">
+  <div class="wrap-wide">
+    <div class="wrap" style="padding:0;">
+      <h2>Install in 30 seconds</h2>
+      <p>Public, unauthenticated, free. Point any MCP-capable client at <code>https://rbi-source.harshil.ai/mcp/</code>. The four tools become available in your next conversation.</p>
+    </div>
+
+    <table class="install">
+      <thead>
+        <tr><th>Client</th><th>How to connect</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Claude Code</td>
+          <td><code>claude mcp add rbi-source --transport http https://rbi-source.harshil.ai/mcp/</code></td>
+        </tr>
+        <tr>
+          <td>Claude Desktop</td>
+          <td>Edit <code>claude_desktop_config.json</code>, add <code>"rbi-source": {"type":"http","url":"https://rbi-source.harshil.ai/mcp/"}</code> under <code>mcpServers</code>, restart.</td>
+        </tr>
+        <tr>
+          <td>Claude.ai (Pro / Team / Enterprise)</td>
+          <td>Settings → Connectors → Add custom connector → paste the URL.</td>
+        </tr>
+        <tr>
+          <td>ChatGPT (Plus / Pro / Team / Enterprise)</td>
+          <td>Settings → Connectors → Create custom connector → paste the URL.</td>
+        </tr>
+        <tr>
+          <td>Cursor</td>
+          <td>Settings → MCP → Add new MCP server → type <code>streamable-http</code>, URL above.</td>
+        </tr>
+        <tr>
+          <td>Cowork</td>
+          <td>Settings → MCP servers → Add → URL above, transport HTTP.</td>
+        </tr>
+        <tr>
+          <td>Cline (VSCode)</td>
+          <td>Edit <code>~/.cline/mcp_settings.json</code> with <code>{"type":"streamableHttp","url":"…"}</code>. <a href="https://github.com/harshilmathur/RBI-Source-MCP#cline-vscode" rel="noopener">Snippet</a></td>
+        </tr>
+        <tr>
+          <td>Continue.dev</td>
+          <td>Edit <code>~/.continue/config.json</code>. <a href="https://github.com/harshilmathur/RBI-Source-MCP#continuedev" rel="noopener">Snippet</a></td>
+        </tr>
+        <tr>
+          <td>Goose (Block)</td>
+          <td>Edit <code>~/.config/goose/config.yaml</code>. <a href="https://github.com/harshilmathur/RBI-Source-MCP#goose" rel="noopener">Snippet</a></td>
+        </tr>
+        <tr>
+          <td>Zed</td>
+          <td>Edit <code>~/.config/zed/settings.json</code>. <a href="https://github.com/harshilmathur/RBI-Source-MCP#zed" rel="noopener">Snippet</a></td>
+        </tr>
+        <tr>
+          <td>Anything else (streamable-HTTP)</td>
+          <td>Point it at <code>https://rbi-source.harshil.ai/mcp/</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p style="font-size:13.5px; color:var(--ink-muted); margin-top:14px;">Verified end-to-end on Claude Code and Claude.ai. Other client snippets follow each tool's documented MCP-config format. <a href="https://github.com/harshilmathur/RBI-Source-MCP/issues" rel="noopener">Open an issue</a> if something breaks.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 7. SAMPLE INTERACTION                                         -->
+<!-- ============================================================ -->
+<section id="sample">
+  <div class="wrap-wide">
+    <div class="wrap" style="padding:0;">
+      <h2>Sample interaction</h2>
+      <p>An LLM asks <em>"What are the net-worth requirements for a payment aggregator?"</em>, decides to call <code>rbi_check_compliance</code>, gets back a citation-grade answer:</p>
+    </div>
+
+    <div class="pair">
+      <div>
+        <h3>Request</h3>
+<pre><code>{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "id": 1,
+  "params": {
+    "name": "rbi_check_compliance",
+    "arguments": {
+      "text": "Our payment aggregator entity has a
+        net worth of ₹10 crore at authorisation.",
+      "topic_hint": "pa",
+      "limit": 1
+    }
+  }
+}</code></pre>
+      </div>
+      <div>
+        <h3>Response (abbreviated)</h3>
+<pre><code>{
+  "_disclaimer": "NOT LEGAL ADVICE. RBI Source MCP
+    returns source-grounded retrieval over RBI
+    publications…",
+  "_llm_instruction": "When presenting results,
+    ALWAYS surface this disclaimer…",
+  "relevant_provisions": [{
+    "document_id": "rbi:master_direction:12896",
+    "title": "Master Direction on Regulation of
+      Payment Aggregator (PA)",
+    "rbi_ref": "RBI/DPSS/2025-26/141",
+    "section": "6", "paragraph_anchor": "6.a",
+    "page": 4,
+    "quoted_text": "An entity seeking
+      authorisation to commence or carry on PA
+      business shall have a minimum net-worth of
+      ₹15 crore…",
+    "official_url": "https://www.rbi.org.in/
+      Scripts/BS_ViewMasDirections.aspx?id=12896",
+    "status": "current"
+  }],
+  "low_confidence": false,
+  "retrieval": "hybrid"
+}</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 8. ARCHITECTURE                                               -->
+<!-- ============================================================ -->
+<section id="architecture" class="arch">
+  <div class="wrap">
+    <h2>Architecture</h2>
+    <ul>
+      <li>Hosted on Fly.io. Single machine in <code>bom</code> (Mumbai), always-on, shared-cpu-1x with 1 GB RAM. Volume-mounted SQLite at <code>/data/db.sqlite</code>.</li>
+      <li>Hybrid retrieval. SQLite FTS5 for sparse (BM25) plus sqlite-vec for dense vectors (384-dim, <code>bge-small-en-v1.5</code> via sentence-transformers). Reciprocal Rank Fusion at k=60 calibrated against a 25-case eval set.</li>
+      <li>Public, unauthenticated, retrieval-only. OAuth 2.1 ceremonial endpoints (RFC 8414, 9728, 7591) for clients that require the discovery walk; tokens are not gated on the actual MCP path.</li>
+      <li>Streamable-HTTP transport. Per-IP rate limit (60 req/min) on <code>/mcp/</code>, body-size cap (200 KB), HTTP-level disclaimer banner, embedder runs in a thread pool so the asyncio event loop never blocks.</li>
+      <li>Weekly refresh planned via GitHub Action. Smoke-test gate (the eval suite) must pass at ≥80% before the new corpus atomic-swaps onto the Fly volume.</li>
+      <li>Fully open source, Apache-2.0. Run your own copy with <code>git clone</code> + <code>uv sync</code> + <code>rbi-source-index-all</code>.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 9. DISCLAIMER (in-body, prominent, full text)                 -->
+<!-- ============================================================ -->
+<section id="disclaimer">
+  <div class="wrap">
+    <h2>Disclaimer</h2>
+    <div class="disclaimer">
+      <p><span class="lead">Not legal advice.</span> RBI Source MCP returns source-grounded retrieval over RBI publications (Master Directions, Circulars, Master Circulars, Press Releases, FAQs); it does not issue compliance verdicts or regulatory opinions.</p>
+      <ol>
+        <li><strong>Not legal advice.</strong> The MCP does not interpret, opine, or advise.</li>
+        <li><strong>Retrieval-only.</strong> Citations are surfaced; verdicts are the consuming LLM's, and decisions are the user's.</li>
+        <li><strong>Provisions may have been amended, withdrawn, or superseded</strong> after this corpus's last refresh. Check the <code>official_url</code> on each provision for the live RBI page.</li>
+        <li><strong>Verify with a qualified human compliance reviewer</strong> before acting on any provision returned.</li>
+        <li><strong>Unofficial.</strong> This is a community-maintained open-source tool and is <em>not</em> affiliated with, endorsed by, or sponsored by the Reserve Bank of India.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="foot-inner">
+    <div>
+      <a href="https://github.com/harshilmathur/RBI-Source-MCP" rel="noopener">github.com/harshilmathur/RBI-Source-MCP</a>
+      <span style="margin: 0 10px; color: var(--rule);">·</span>
+      Apache-2.0
+      <span style="margin: 0 10px; color: var(--rule);">·</span>
+      <a href="https://github.com/harshilmathur/RBI-Source-MCP/issues" rel="noopener">Open an issue</a>
+    </div>
+    <div class="tm">RBI® is a trademark of the Reserve Bank of India.</div>
+  </div>
+</footer>
+
+<script>
+  // Tiny copy-to-clipboard handler. The only JS on this page.
+  document.querySelectorAll('button.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var sel = btn.getAttribute('data-copy');
+      var el  = document.querySelector(sel);
+      if (!el) return;
+      var text = el.textContent.trim();
+      var done = function () {
+        var prev = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = prev; }, 1400);
+      };
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, function () {});
+      } else {
+        // Fallback for older browsers / non-HTTPS local dev
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta);
+        ta.select(); try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
+  });
+</script>
+
+</body>
+</html>

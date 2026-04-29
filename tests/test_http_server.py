@@ -37,22 +37,78 @@ async def test_health_endpoint_returns_ok() -> None:
 
 
 @pytest.mark.asyncio
-async def test_banner_returns_corpus_stats() -> None:
-    """The / banner must include the corpus stats. Tolerant of different
-    DB paths via $RBI_SOURCE_DB; if the corpus is unavailable, the banner
-    still returns a valid JSON envelope with the error path."""
+async def test_banner_returns_corpus_stats_for_json_clients() -> None:
+    """The / banner must include the corpus stats for any non-browser caller.
+    Tolerant of different DB paths via $RBI_SOURCE_DB; if the corpus is
+    unavailable, the banner still returns a valid JSON envelope with the
+    error path."""
     from rbi_source_mcp.server_http import build_asgi_app
 
     app = build_asgi_app(stateless=True)
     async with LifespanManager(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # Default Accept (httpx sends */*) — should land on JSON path.
             response = await client.get("/")
     assert response.status_code == 200
+    assert "application/json" in response.headers.get("content-type", "")
     payload = response.json()
     assert payload["name"] == "rbi-source-mcp"
     assert "endpoints" in payload
     assert "/mcp" in payload["endpoints"]["mcp"]
+
+
+@pytest.mark.asyncio
+async def test_banner_returns_html_for_browser_accept() -> None:
+    """When Accept includes text/html (real browsers), GET / returns the
+    static homepage instead of the JSON banner. Asserts the page contains
+    the load-bearing pieces: title, hero, install matrix, disclaimer."""
+    from rbi_source_mcp.server_http import build_asgi_app
+
+    app = build_asgi_app(stateless=True)
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/",
+                headers={
+                    # Real Chrome/Firefox Accept header.
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+            )
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    body = response.text
+    # Load-bearing structural pieces — if any of these break, the page
+    # has regressed in a way that hurts UX or removes the disclaimer.
+    assert "<!doctype html>" in body.lower()
+    assert "RBI Source MCP" in body
+    assert "https://rbi-source.harshil.ai/mcp/" in body
+    assert "Install in 30s" in body
+    assert "NOT LEGAL ADVICE" in body
+    assert "rbi_check_compliance" in body  # tools section uses underscored names
+    # CSP header present (defense-in-depth on the static page)
+    assert "default-src" in response.headers.get("content-security-policy", "")
+
+
+@pytest.mark.asyncio
+async def test_banner_returns_json_when_client_explicitly_wants_json() -> None:
+    """A client that includes Accept: application/json (most MCP clients do)
+    must get JSON even if it ALSO accepts text/html. The asymmetric rule
+    in `_wants_html` exists to keep machine callers on the JSON contract
+    by default."""
+    from rbi_source_mcp.server_http import build_asgi_app
+
+    app = build_asgi_app(stateless=True)
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/",
+                headers={"Accept": "application/json, text/html"},
+            )
+    assert response.status_code == 200
+    assert "application/json" in response.headers.get("content-type", "")
 
 
 @pytest.mark.asyncio

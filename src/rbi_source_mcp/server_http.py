@@ -23,6 +23,7 @@ import os
 import sys
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import structlog
 import uvicorn
@@ -31,12 +32,50 @@ from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount, Route
 
 from . import __version__
 from . import oauth as _oauth
 from .server import _build_server
+
+# Static homepage. Loaded once at import time and held in memory; mtime is
+# checked on each request to support local dev (edit the file, refresh).
+# Browsers see this; curl + MCP clients still get the JSON banner via
+# Accept-header detection on the / route. See banner() below.
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+_INDEX_PATH = _STATIC_DIR / "index.html"
+_index_cache: dict[str, object] = {"bytes": None, "mtime": 0.0}
+
+
+def _load_index_html() -> bytes | None:
+    """Return the homepage HTML bytes (cached, mtime-aware). None on miss."""
+    try:
+        st = _INDEX_PATH.stat()
+    except FileNotFoundError:
+        return None
+    if _index_cache["bytes"] is None or st.st_mtime != _index_cache["mtime"]:
+        _index_cache["bytes"] = _INDEX_PATH.read_bytes()
+        _index_cache["mtime"] = st.st_mtime
+    return _index_cache["bytes"]  # type: ignore[return-value]
+
+
+def _wants_html(request: Request) -> bool:
+    """Decide whether GET / should return the HTML page or the JSON banner.
+
+    Rule: HTML if Accept contains `text/html` AND does NOT contain
+    `application/json`. This routes:
+      - Browsers (Accept: text/html,...) → HTML
+      - curl with no -H              (Accept: */*) → JSON (default)
+      - MCP clients                  (Accept: application/json,...) → JSON
+      - Probes that explicitly want JSON via Accept header → JSON
+
+    The asymmetry is intentional: JSON is the safe default for unknown
+    callers (machine-readable, identical to existing /banner contract).
+    HTML is opt-in via a real browser's Accept header.
+    """
+    accept = (request.headers.get("accept") or "").lower()
+    return "text/html" in accept and "application/json" not in accept
 
 logger = structlog.get_logger(__name__)
 
@@ -348,13 +387,49 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         _health_cache["ts"] = now
         return JSONResponse(payload, status_code=status_code)
 
-    async def banner(_: Request) -> JSONResponse:
-        """Friendly landing for `curl <HOSTED_URL>/`. Surfaces corpus stats.
+    async def banner(request: Request) -> JSONResponse | HTMLResponse:
+        """Dual-purpose landing.
 
-        Cached for 60s so /, the most curl-able endpoint, doesn't spawn a
-        fresh SQLite connection + schema migration + sqlite-vec extension
-        load on every hit.
+        - Browsers (Accept includes text/html) get the static HTML homepage,
+          loaded from src/rbi_source_mcp/static/index.html. The HTML page is
+          self-contained (inline CSS, ~10 lines of inline JS for copy
+          buttons) and ships in the wheel.
+        - Everything else (curl with default Accept */*, MCP clients sending
+          Accept: application/json) gets the corpus-stats JSON banner. Same
+          contract as before — the JSON shape did not change.
+
+        The JSON path is cached for 60s; the HTML path is cached in memory
+        with mtime-based invalidation, so editing the file in dev refreshes
+        without restart.
         """
+        if _wants_html(request):
+            html = _load_index_html()
+            if html is not None:
+                return HTMLResponse(
+                    content=html,
+                    headers={
+                        "Cache-Control": "public, max-age=300",
+                        "Content-Security-Policy": (
+                            # Strict-ish CSP: inline styles + inline scripts
+                            # are required for the single-file homepage; no
+                            # external origins permitted.
+                            "default-src 'none'; "
+                            "style-src 'self' 'unsafe-inline'; "
+                            "script-src 'self' 'unsafe-inline'; "
+                            "img-src 'self' data:; "
+                            "connect-src 'self'; "
+                            "form-action 'self'; "
+                            "base-uri 'self'; "
+                            "frame-ancestors 'none'"
+                        ),
+                        "Referrer-Policy": "strict-origin-when-cross-origin",
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
+            # Static file missing in this build — fall through to JSON path
+            # rather than 500. Logged once for visibility.
+            logger.warning("static.index_missing", path=str(_INDEX_PATH))
+
         now = time.time()
         cached = _banner_cache["data"]
         cached_ts = float(_banner_cache["ts"])  # type: ignore[arg-type]
