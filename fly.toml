@@ -50,7 +50,12 @@ primary_region = "bom"  # Mumbai, closest to RBI source data + likely user base
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "1gb"
+  # Bumped from 1 GB after observing memory pressure: bge-small ~250 MB +
+  # Python interpreter + sqlite mmap'd pages + uvicorn was tight enough
+  # that the embedder's pages got evicted between requests, causing
+  # 5-20x latency on warm tool calls. Headroom on a shared-cpu-1x is
+  # cheap (~$5/mo more) compared to brown-out risk on a public endpoint.
+  memory = "2gb"
 
 # Process group — single MCP HTTP server process.
 [processes]
