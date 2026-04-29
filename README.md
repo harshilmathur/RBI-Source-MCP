@@ -2,7 +2,9 @@
 
 > **The entire RBI corpus, version-aware, citation-first, in your AI workflow.**
 
-An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that brings authoritative Reserve Bank of India regulatory information into Claude.ai, Claude Code, and Cursor — with hybrid retrieval over Master Directions, Circulars, Press Releases, and FAQs, version-awareness, citation-first responses, and explicit withdrawal/supersession detection.
+An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that brings authoritative Reserve Bank of India regulatory information into any MCP-capable client (Claude Code, Claude Desktop, Claude.ai, ChatGPT, Cursor, Cowork, Cline, Continue, Goose, Zed, ...) with hybrid retrieval over Master Directions, Circulars, Press Releases, FAQs, and Master Circulars, citation-first responses, and explicit withdrawal/supersession detection.
+
+**Live hosted endpoint** (free, no auth): `https://rbi-source.harshil.ai/mcp/` · [install in 30s ↓](#quick-start--install-in-30-seconds)
 
 > ⚠️ **Unofficial, community-maintained open-source tool.** RBI Source MCP is not affiliated with, endorsed by, or sponsored by the Reserve Bank of India. RBI® is a trademark of the Reserve Bank of India. For takedown or legal inquiries: open an issue on this repo (5 business-day response SLA).
 
@@ -29,22 +31,157 @@ Plus **9,908 withdrawn-circular records** indexed for `check_current` lookup (me
 
 Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-small-en-v1.5` 384-dim dense) fused via Reciprocal Rank Fusion (k=60). Every response carries a mandatory legal disclaimer. Eval gate: 25 hand-labeled compliance cases, must pass at ≥80%; currently 100%.
 
-## Quick Start
+## Quick Start — install in 30 seconds
 
-> **Status:** **Live** at `https://rbi-source.harshil.ai/mcp/` — Fly.io single-machine in Mumbai, 1 GB RAM, 1 GB volume, always-on. Public, unauthenticated, retrieval-only.
+The hosted endpoint is live and free to use:
 
-| Client | Connect |
+```
+https://rbi-source.harshil.ai/mcp/
+```
+
+Public, unauthenticated, retrieval-only. Mumbai (Fly.io). Every response carries the mandatory legal disclaimer.
+
+> Try it without installing anything:
+> ```bash
+> curl -sS https://rbi-source.harshil.ai/health
+> # → {"version":"0.1.0-dev","status":"ok","documents":803}
+> ```
+
+### Connect from your client
+
+| Client | How |
 |---|---|
-| Claude Code | `claude mcp add rbi-source --transport http https://rbi-source.harshil.ai/mcp/` |
-| Claude.ai (Pro/Team) | Settings → Connectors → Add custom connector → paste `https://rbi-source.harshil.ai/mcp/` |
-| ChatGPT (Plus/Pro/Team) | Settings → Connectors → Create custom connector → paste `https://rbi-source.harshil.ai/mcp/` |
+| **Claude Code** (CLI) | `claude mcp add rbi-source --transport http https://rbi-source.harshil.ai/mcp/` |
+| **Claude Desktop** | Edit `claude_desktop_config.json`, see [block below](#claude-desktop) |
+| **Claude.ai** (Pro/Team/Enterprise) | Settings → **Connectors** → **Add custom connector** → paste the URL |
+| **ChatGPT** (Plus/Pro/Team/Enterprise) | Settings → **Connectors** → **Create custom connector** → paste the URL. ⚠️ See [ChatGPT note](#chatgpt-note) |
+| **Cursor** | Settings → **MCP** → **Add new MCP server** → type `streamable-http`, URL: `https://rbi-source.harshil.ai/mcp/` |
+| **Cowork** | Settings → MCP servers → Add → URL: `https://rbi-source.harshil.ai/mcp/`, transport: HTTP |
+| **Cline** (VSCode) | `~/.cline/mcp_settings.json`, see [block below](#cline-vscode) |
+| **Continue.dev** | `~/.continue/config.json`, see [block below](#continuedev) |
+| **Goose** (Block) | `~/.config/goose/config.yaml`, see [block below](#goose) |
+| **Zed** | `~/.config/zed/settings.json`, see [block below](#zed) |
+| **Anything else** that speaks MCP streamable-HTTP | Point it at `https://rbi-source.harshil.ai/mcp/` |
 
-Endpoints:
-- `GET /` — corpus stats banner
-- `GET /health` — liveness probe (returns 503 if corpus unavailable)
-- `POST /mcp/` — MCP streamable-HTTP transport
+After connecting, the four tools (`rbi.check_compliance`, `rbi.search`, `rbi.get_document`, `rbi.check_current`) become available in any conversation. Try:
 
-If you'd rather run your own copy locally, see [Run your own copy](#run-your-own-copy) below.
+> *"Use the RBI Source MCP. What are the net-worth requirements for a payment aggregator?"*
+
+### Config snippets
+
+#### Claude Desktop
+
+Open `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows) and add:
+
+```json
+{
+  "mcpServers": {
+    "rbi-source": {
+      "type": "http",
+      "url": "https://rbi-source.harshil.ai/mcp/"
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The MCP icon should appear at the bottom of the chat box.
+
+#### Cline (VSCode)
+
+In Cline's settings, click **MCP Servers** → **Edit MCP Settings**, then add:
+
+```json
+{
+  "mcpServers": {
+    "rbi-source": {
+      "type": "streamableHttp",
+      "url": "https://rbi-source.harshil.ai/mcp/"
+    }
+  }
+}
+```
+
+#### Continue.dev
+
+In `~/.continue/config.json`:
+
+```json
+{
+  "experimental": {
+    "modelContextProtocolServers": [
+      {
+        "transport": {
+          "type": "streamable-http",
+          "url": "https://rbi-source.harshil.ai/mcp/"
+        }
+      }
+    ]
+  }
+}
+```
+
+#### Goose
+
+In `~/.config/goose/config.yaml`:
+
+```yaml
+extensions:
+  rbi-source:
+    type: streamable_http
+    uri: https://rbi-source.harshil.ai/mcp/
+    enabled: true
+```
+
+#### Zed
+
+In `~/.config/zed/settings.json`:
+
+```json
+{
+  "context_servers": {
+    "rbi-source": {
+      "command": null,
+      "settings": {
+        "url": "https://rbi-source.harshil.ai/mcp/",
+        "type": "http"
+      }
+    }
+  }
+}
+```
+
+### Verify the connection
+
+After install, run a curl probe to confirm the endpoint is reachable from your network:
+
+```bash
+curl -sS -X POST https://rbi-source.harshil.ai/mcp/ \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | head -c 500
+```
+
+You should see an SSE event listing the four tools.
+
+### Endpoints
+
+- `GET /` — corpus stats banner (curl-friendly JSON)
+- `GET /health` — liveness probe; 200 with `documents` count when healthy, 503 if corpus is empty/missing
+- `POST /mcp/` — MCP streamable-HTTP transport (note the trailing slash — clients that don't follow 307s should hit `/mcp/` directly)
+
+### ChatGPT note
+
+ChatGPT's connector validation is stricter than the MCP spec: tool names with dots (`rbi.search`) may be rejected at registration time. This MCP currently exposes dotted names. If ChatGPT rejects the schema, two options:
+
+1. Use a different client (Claude.ai works fine with dotted names).
+2. Open an issue and we'll publish an `rbi_search`-prefixed alias.
+
+Verified end-to-end: **Claude Code** (CLI). The other client snippets follow each tool's documented MCP-config format but haven't been individually smoke-tested — if you hit issues with a specific client, please open an issue with the error output and we'll get it sorted.
+
+### Self-host
+
+Don't want the hosted endpoint? You can run your own copy. See [Run your own copy](#run-your-own-copy) below — it's `git clone` + `uv sync` + `rbi-source-index-all`.
 
 ## Tools
 
