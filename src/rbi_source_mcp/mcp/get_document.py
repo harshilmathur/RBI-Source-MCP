@@ -1,4 +1,4 @@
-"""rbi.get_document — fetch a Master Direction's metadata + assembled text.
+"""rbi_get_document — fetch a Master Direction's metadata + assembled text.
 
 v0.1.5 returns:
     - Document metadata from `documents` table (title, URL, last_updated_at, status)
@@ -34,7 +34,7 @@ def get_document(
         "document_id": document_id,
         "as_of": now,
         "as_of_requested": as_of,
-        "tool": "rbi.get_document",
+        "tool": "rbi_get_document",
     }
 
     if not document_id:

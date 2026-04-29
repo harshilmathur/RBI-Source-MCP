@@ -1,4 +1,4 @@
-"""rbi.check_compliance — the v2 headline tool.
+"""rbi_check_compliance — the v2 headline tool.
 
 Takes free text (a clause, PRD section, draft policy paragraph) and returns
 ranked relevant Master Direction provisions with citations. **Retrieval-only
@@ -75,7 +75,7 @@ def check_compliance(
         "caveat": _CAVEAT,
         "topic_hint": topic_hint,
         "input_text_preview": raw[:120],
-        "tool": "rbi.check_compliance",
+        "tool": "rbi_check_compliance",
         "not_legal_advice": True,
     }
 

@@ -1,4 +1,4 @@
-"""Tests for rbi.check_compliance — the v2 headline tool."""
+"""Tests for rbi_check_compliance — the v2 headline tool."""
 
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ def test_response_includes_required_envelope_fields(db) -> None:
         "not_legal_advice",
     ):
         assert field in result, f"missing field: {field}"
-    assert result["tool"] == "rbi.check_compliance"
+    assert result["tool"] == "rbi_check_compliance"
     assert result["not_legal_advice"] is True
 
 

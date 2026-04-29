@@ -433,7 +433,7 @@ def init_db(db_path: str | Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Lookups powering rbi.check_current
+# Lookups powering rbi_check_current
 # ---------------------------------------------------------------------------
 
 

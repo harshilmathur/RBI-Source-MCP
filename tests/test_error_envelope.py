@@ -21,7 +21,7 @@ def test_error_response_carries_disclaimer_at_top() -> None:
     """The error envelope must have `_disclaimer` and `_llm_instruction`
     at the top of the JSON object — same as success envelope."""
     tc = _error_response(
-        tool_name="rbi.search",
+        tool_name="rbi_search",
         reason="tool_failed",
         exc=_FakeError("boom"),
     )
@@ -31,7 +31,7 @@ def test_error_response_carries_disclaimer_at_top() -> None:
     assert keys[1] == "_llm_instruction"
     assert "NOT LEGAL ADVICE" in payload["_disclaimer"]
     assert payload["status"] == "error"
-    assert payload["tool"] == "rbi.search"
+    assert payload["tool"] == "rbi_search"
     assert payload["reason"] == "tool_failed"
 
 
@@ -40,7 +40,7 @@ def test_error_response_does_not_leak_traceback() -> None:
     exception messages, or tracebacks. Only the exception class name +
     a generic message."""
     tc = _error_response(
-        tool_name="rbi.check_compliance",
+        tool_name="rbi_check_compliance",
         reason="db_unavailable",
         exc=FileNotFoundError("/secret/path/to/db.sqlite not found"),
     )
@@ -55,7 +55,7 @@ def test_error_response_class_name_passes_through() -> None:
     """The exception class name flows through `error_class` so consuming
     LLMs/clients can do basic categorization."""
     tc = _error_response(
-        tool_name="rbi.check_current",
+        tool_name="rbi_check_current",
         reason="tool_failed",
         exc=ValueError("bad input"),
     )
@@ -67,7 +67,7 @@ def test_wrap_response_and_error_response_share_disclaimer_field_order() -> None
     """Both success and error envelopes must agree on field ordering so
     LLMs see a consistent shape regardless of outcome."""
     success = _wrap_response({"status": "ok", "results": []})
-    error = json.loads(_error_response("rbi.search", "tool_failed", _FakeError("x")).text)
+    error = json.loads(_error_response("rbi_search", "tool_failed", _FakeError("x")).text)
     assert list(success.keys())[:2] == list(error.keys())[:2]
     assert success["_disclaimer"] == error["_disclaimer"]
     assert success["_llm_instruction"] == error["_llm_instruction"]

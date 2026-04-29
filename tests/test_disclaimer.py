@@ -58,7 +58,7 @@ def test_llm_instruction_names_all_five_points() -> None:
 def test_wrap_response_injects_disclaimer_at_top() -> None:
     """The disclaimer fields must appear FIRST in the JSON object so an LLM
     streaming or partially-summarizing the response sees them before the data."""
-    payload = {"results": [{"chunk_id": "x"}], "tool": "rbi.search"}
+    payload = {"results": [{"chunk_id": "x"}], "tool": "rbi_search"}
     wrapped = _wrap_response(payload)
     keys = list(wrapped.keys())
     assert keys[0] == "_disclaimer"
@@ -81,7 +81,7 @@ def test_wrap_response_does_not_mutate_input() -> None:
 def test_wrap_response_serializes_to_valid_json() -> None:
     """Round-trip through json.dumps/json.loads — no surprises."""
     payload = {
-        "tool": "rbi.check_compliance",
+        "tool": "rbi_check_compliance",
         "relevant_provisions": [{"document_id": "rbi:master_direction:12896"}],
         "low_confidence": False,
     }
@@ -90,7 +90,7 @@ def test_wrap_response_serializes_to_valid_json() -> None:
     decoded = json.loads(text)
     assert decoded["_disclaimer"] == DISCLAIMER
     assert decoded["_llm_instruction"] == LLM_INSTRUCTION
-    assert decoded["tool"] == "rbi.check_compliance"
+    assert decoded["tool"] == "rbi_check_compliance"
 
 
 def test_wrap_response_handles_empty_payload() -> None:

@@ -148,12 +148,24 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
             assert fam in fams, f"missing family in banner: {fam}"
         return f"families={list(fams.keys())}", body["corpus"]
 
-    def t_307_redirect():
-        r = client.post(f"{base}/mcp", json={}, timeout=15.0, follow_redirects=False)
-        assert r.status_code == 307, f"expected 307, got {r.status_code}"
-        loc = r.headers.get("location", "")
-        assert loc.endswith("/mcp/"), f"redirect location: {loc}"
-        return f"307 → {loc}", {"location": loc}
+    def t_no_slash_no_redirect():
+        """Since v0.5.10, POST /mcp (no trailing slash) is served directly
+        by the ASGI path normalizer — no 307. This was a hard requirement
+        for Claude.ai's connector, which carries the bearer token in the
+        post-OAuth request and refuses to follow redirects."""
+        r = client.post(
+            f"{base}/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": "2024-11-05",
+            },
+            timeout=15.0,
+            follow_redirects=False,
+        )
+        assert r.status_code == 200, f"expected 200 (no redirect), got {r.status_code}"
+        return f"200 OK on /mcp (no slash, no redirect)", {"status": r.status_code}
 
     def t_initialize():
         sc, rpc, text, _ = _post_mcp(
@@ -169,7 +181,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
         sc, rpc, _, _ = _post_mcp(client, url, "tools/list", {})
         assert sc == 200
         names = {t["name"] for t in rpc["result"]["tools"]}
-        expected = {"rbi.check_compliance", "rbi.search", "rbi.get_document", "rbi.check_current"}
+        expected = {"rbi_check_compliance", "rbi_search", "rbi_get_document", "rbi_check_current"}
         assert names == expected, f"tools={names}, expected={expected}"
         return f"tools={sorted(names)}", {"tools": sorted(names)}
 
@@ -189,7 +201,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
 
     add(case("A. Transport", "GET /health returns ok with corpus count", t_health))
     add(case("A. Transport", "GET / banner has all 5 families", t_banner))
-    add(case("A. Transport", "POST /mcp (no slash) → 307 to /mcp/", t_307_redirect))
+    add(case("A. Transport", "POST /mcp (no slash) is served directly (no 307)", t_no_slash_no_redirect))
     add(case("A. Transport", "MCP initialize handshake", t_initialize))
     add(case("A. Transport", "tools/list returns exactly the 4 tools", t_tools_list))
     add(case("A. Transport", "CORS preflight (Claude.ai origin)", t_cors_preflight))
@@ -204,7 +216,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
         return _inner_payload(rpc), dur
 
     def t_search_basic():
-        payload, dur = call_tool("rbi.search", {"query": "payment aggregator net worth", "limit": 2})
+        payload, dur = call_tool("rbi_search", {"query": "payment aggregator net worth", "limit": 2})
         assert _has_disclaimer(payload)
         assert "results" in payload
         assert len(payload["results"]) >= 1
@@ -215,7 +227,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
 
     def t_check_compliance_basic():
         clause = "Our payment aggregator entity has a net worth of ₹10 crore at the time of authorisation."
-        payload, dur = call_tool("rbi.check_compliance", {"text": clause, "topic_hint": "pa", "limit": 3})
+        payload, dur = call_tool("rbi_check_compliance", {"text": clause, "topic_hint": "pa", "limit": 3})
         assert _has_disclaimer(payload)
         assert "relevant_provisions" in payload
         assert len(payload["relevant_provisions"]) >= 1
@@ -227,7 +239,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
         return f"got {len(payload['relevant_provisions'])} provisions in {dur:.0f}ms", {"latency_ms": dur}
 
     def t_compliance_low_confidence_for_recipe():
-        payload, dur = call_tool("rbi.check_compliance", {"text": "Boil potatoes for 12 minutes, then mash with butter and milk."})
+        payload, dur = call_tool("rbi_check_compliance", {"text": "Boil potatoes for 12 minutes, then mash with butter and milk."})
         assert _has_disclaimer(payload)
         # Out-of-scope inputs should flag low_confidence
         assert payload.get("low_confidence") is True, f"low_confidence={payload.get('low_confidence')}"
@@ -235,7 +247,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
 
     def t_get_document_md():
         # Payment Aggregator MD (id=12896, the headline demo target)
-        payload, dur = call_tool("rbi.get_document", {"document_id": "rbi:master_direction:12896", "include_text": False})
+        payload, dur = call_tool("rbi_get_document", {"document_id": "rbi:master_direction:12896", "include_text": False})
         assert _has_disclaimer(payload)
         assert payload["status"] != "error", f"status={payload.get('status')}"
         # Tolerant: accept either `title` at top or nested under `document`/`metadata`.
@@ -247,16 +259,16 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
 
     def t_check_current_md():
         url_q = "https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12896"
-        payload, dur = call_tool("rbi.check_current", {"url_or_ref": url_q})
+        payload, dur = call_tool("rbi_check_current", {"url_or_ref": url_q})
         assert _has_disclaimer(payload)
         assert payload["status"] in ("current", "withdrawn"), f"status={payload['status']}"
         return f"status={payload['status']} for PA MD ({dur:.0f}ms)", {"latency_ms": dur}
 
-    add(case("B. Tools", "rbi.search returns ranked citations", t_search_basic))
-    add(case("B. Tools", "rbi.check_compliance returns provisions", t_check_compliance_basic))
+    add(case("B. Tools", "rbi_search returns ranked citations", t_search_basic))
+    add(case("B. Tools", "rbi_check_compliance returns provisions", t_check_compliance_basic))
     add(case("B. Tools", "out-of-scope input flags low_confidence", t_compliance_low_confidence_for_recipe))
-    add(case("B. Tools", "rbi.get_document fetches PA MD metadata", t_get_document_md))
-    add(case("B. Tools", "rbi.check_current resolves PA MD URL", t_check_current_md))
+    add(case("B. Tools", "rbi_get_document fetches PA MD metadata", t_get_document_md))
+    add(case("B. Tools", "rbi_check_current resolves PA MD URL", t_check_current_md))
 
     # =========================================================================
     # C. Coverage across all 5 families (each family must surface in at least one query)
@@ -272,7 +284,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
     for fam, q, label in family_queries:
         def make(fam=fam, q=q, label=label):
             def runner():
-                payload, dur = call_tool("rbi.search", {"query": q, "limit": 5, "filters": {"include_withdrawn": False}})
+                payload, dur = call_tool("rbi_search", {"query": q, "limit": 5, "filters": {"include_withdrawn": False}})
                 assert _has_disclaimer(payload)
                 doc_ids = [r.get("document_id", "") for r in payload.get("results", [])]
                 hit = any(f"rbi:{fam}:" in did for did in doc_ids)
@@ -308,7 +320,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
     for hint, q in topic_hints:
         def make(hint=hint, q=q):
             def runner():
-                payload, dur = call_tool("rbi.check_compliance", {"text": q, "topic_hint": hint, "limit": 3})
+                payload, dur = call_tool("rbi_check_compliance", {"text": q, "topic_hint": hint, "limit": 3})
                 assert _has_disclaimer(payload)
                 provs = payload.get("relevant_provisions", [])
                 assert provs, f"empty provisions for hint={hint}"
@@ -320,7 +332,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
     # E. Error and edge cases
     # =========================================================================
     def t_empty_text():
-        payload, dur = call_tool("rbi.check_compliance", {"text": ""})
+        payload, dur = call_tool("rbi_check_compliance", {"text": ""})
         assert _has_disclaimer(payload), "disclaimer missing on empty input"
         # Either low_confidence or an explicit error reason — both are acceptable.
         ok = payload.get("low_confidence") is True or payload.get("status") == "error"
@@ -328,14 +340,14 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
         return f"empty input handled ({dur:.0f}ms)", {"latency_ms": dur}
 
     def t_punctuation_only():
-        payload, dur = call_tool("rbi.search", {"query": ".,;!?@#"})
+        payload, dur = call_tool("rbi_search", {"query": ".,;!?@#"})
         assert _has_disclaimer(payload)
         # Should NOT crash; should return no results or low_confidence
         return f"handled ({dur:.0f}ms)", {"latency_ms": dur}
 
     def t_oversized_text_returns_input_too_large():
         # 33,000 chars — over the 32,000 cap.
-        payload, dur = call_tool("rbi.check_compliance", {"text": "a " * 16500})
+        payload, dur = call_tool("rbi_check_compliance", {"text": "a " * 16500})
         assert _has_disclaimer(payload)
         assert payload.get("status") == "error"
         assert payload.get("reason") == "input_too_large", f"reason={payload.get('reason')}"
@@ -354,7 +366,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
         return f"reason=unknown_tool ({dur:.0f}ms)", {"branch": "wrapped_envelope"}
 
     def t_check_current_unsupported_url():
-        payload, _ = call_tool("rbi.check_current", {"url_or_ref": "https://example.com/not-a-real-rbi-page"})
+        payload, _ = call_tool("rbi_check_current", {"url_or_ref": "https://example.com/not-a-real-rbi-page"})
         assert _has_disclaimer(payload)
         # Should be a structured "unsupported" envelope, not a crash. v0.1
         # uses `unsupported_at_v0.1` as the explicit status marker.
@@ -365,7 +377,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
 
     def t_unicode_input():
         # Hindi text + currency symbol — the corpus is English but unicode shouldn't crash
-        payload, dur = call_tool("rbi.search", {"query": "₹500 crore नेट वर्थ", "limit": 1})
+        payload, dur = call_tool("rbi_search", {"query": "₹500 crore नेट वर्थ", "limit": 1})
         assert _has_disclaimer(payload)
         return f"unicode handled ({dur:.0f}ms)", {"latency_ms": dur}
 

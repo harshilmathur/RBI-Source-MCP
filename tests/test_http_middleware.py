@@ -67,7 +67,7 @@ async def test_mcp_no_trailing_slash_does_not_redirect() -> None:
                 follow_redirects=False,
             )
     assert r.status_code == 200, f"got {r.status_code}: expected 200 (no redirect)"
-    assert "rbi.search" in r.text or "tools" in r.text, "tools/list response not received"
+    assert "rbi_search" in r.text or "tools" in r.text, "tools/list response not received"
 
 
 @pytest.mark.asyncio

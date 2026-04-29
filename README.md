@@ -63,7 +63,7 @@ Public, unauthenticated, retrieval-only. Mumbai (Fly.io). Every response carries
 | **Zed** | `~/.config/zed/settings.json`, see [block below](#zed) |
 | **Anything else** that speaks MCP streamable-HTTP | Point it at `https://rbi-source.harshil.ai/mcp/` |
 
-After connecting, the four tools (`rbi.check_compliance`, `rbi.search`, `rbi.get_document`, `rbi.check_current`) become available in any conversation. Try:
+After connecting, the four tools (`rbi_check_compliance`, `rbi_search`, `rbi_get_document`, `rbi_check_current`) become available in any conversation. Try:
 
 > *"Use the RBI Source MCP. What are the net-worth requirements for a payment aggregator?"*
 
@@ -170,14 +170,9 @@ You should see an SSE event listing the four tools.
 - `GET /health` — liveness probe; 200 with `documents` count when healthy, 503 if corpus is empty/missing
 - `POST /mcp/` — MCP streamable-HTTP transport (note the trailing slash — clients that don't follow 307s should hit `/mcp/` directly)
 
-### ChatGPT note
+Verified end-to-end: **Claude Code** (CLI), **Claude.ai** (Settings → Connectors). The other client snippets follow each tool's documented MCP-config format but haven't been individually smoke-tested — if you hit issues with a specific client, please open an issue with the error output and we'll get it sorted.
 
-ChatGPT's connector validation is stricter than the MCP spec: tool names with dots (`rbi.search`) may be rejected at registration time. This MCP currently exposes dotted names. If ChatGPT rejects the schema, two options:
-
-1. Use a different client (Claude.ai works fine with dotted names).
-2. Open an issue and we'll publish an `rbi_search`-prefixed alias.
-
-Verified end-to-end: **Claude Code** (CLI). The other client snippets follow each tool's documented MCP-config format but haven't been individually smoke-tested — if you hit issues with a specific client, please open an issue with the error output and we'll get it sorted.
+> **Tool naming:** as of v0.5.10 (2026-04-29), tools use underscored names (`rbi_search`, `rbi_check_compliance`, etc.) to comply with Claude.ai's and ChatGPT's stricter `^[a-zA-Z0-9_-]{1,64}$` tool-name pattern. Earlier dotted names (`rbi.search`) no longer exist; if your client cached the old schema, refresh the connector.
 
 ### Self-host
 
@@ -185,7 +180,7 @@ Don't want the hosted endpoint? You can run your own copy. See [Run your own cop
 
 ## Tools
 
-### `rbi.check_compliance(text, topic_hint?)` — HEADLINE
+### `rbi_check_compliance(text, topic_hint?)` — HEADLINE
 
 Paste free text (a clause, PRD section, draft policy paragraph, code comment) and get back ranked relevant provisions with citations: paragraph anchor, official URL, RBI reference, last-updated date, current/withdrawn status.
 
@@ -201,15 +196,15 @@ Paste free text (a clause, PRD section, draft policy paragraph, code comment) an
 
 Unknown values are ignored (search spans full corpus). Out-of-scope inputs (recipes, sports articles, anything unrelated) return `low_confidence: true` so consuming LLMs can decline to synthesize.
 
-### `rbi.search(query, filters?)` — direct retrieval
+### `rbi_search(query, filters?)` — direct retrieval
 
 Same hybrid engine `check_compliance` uses, exposed for cleaner keyword queries: "what are the net-worth requirements for PAs". Returns ranked chunks with citations across the whole corpus or filtered by topic.
 
-### `rbi.get_document(document_id, include_text?, as_of?)` — fetch a document
+### `rbi_get_document(document_id, include_text?, as_of?)` — fetch a document
 
 Returns metadata + table of contents (chunk anchors, sections, page numbers) for any document. Pass `include_text=true` to get the full assembled body. `as_of` reserved for v1.1 (when document version history lands).
 
-### `rbi.check_current(url_or_ref)` — safety/utility tool
+### `rbi_check_current(url_or_ref)` — safety/utility tool
 
 Paste an RBI URL and learn whether it's current, withdrawn, or out-of-corpus. Useful for verifying a citation. Three-step lookup:
 1. Withdrawn-circulars list → returns `withdrawn` with replacement reference
@@ -288,7 +283,7 @@ claude mcp add rbi-source \
   -- $(pwd)/.venv/bin/rbi-source-mcp
 ```
 
-Then `/mcp` to verify connection. The four tools (`rbi.check_compliance`, `rbi.search`, `rbi.get_document`, `rbi.check_current`) become available in any Claude Code session.
+Then `/mcp` to verify connection. The four tools (`rbi_check_compliance`, `rbi_search`, `rbi_get_document`, `rbi_check_current`) become available in any Claude Code session.
 
 ### Run as an HTTP server (hosted-mode parity)
 

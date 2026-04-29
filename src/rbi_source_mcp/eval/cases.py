@@ -2,7 +2,7 @@
 
 Each case is a dict with:
     name                   -- short human label
-    clause                 -- the input text passed to rbi.check_compliance
+    clause                 -- the input text passed to rbi_check_compliance
     topic_hint             -- optional topic_hint passed to the tool
     expected_md_id         -- the MD that should appear in top-N results
     expected_anchor_prefix -- (optional) paragraph_anchor must start with this

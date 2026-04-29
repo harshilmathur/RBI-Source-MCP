@@ -1,4 +1,4 @@
-"""rbi.search — direct hybrid retrieval over MD chunks.
+"""rbi_search — direct hybrid retrieval over MD chunks.
 
 This is the same engine `check_compliance` uses internally, exposed for the
 "what rules apply to <topic>" workflow where the user has a clean keyword
@@ -73,7 +73,7 @@ def search(
             "v0.5 hybrid retrieval (FTS5 sparse + sqlite-vec dense, RRF fused). "
             "Corpus limited to indexed Master Directions."
         ),
-        "tool": "rbi.search",
+        "tool": "rbi_search",
     }
 
     if not raw:
