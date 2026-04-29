@@ -4,6 +4,61 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.5.10 — Claude.ai connector compatibility
+
+Three fixes landed in sequence chasing Claude.ai's "Custom Connectors"
+flow into a working state. None affect Claude Code, curl, or any client
+that worked before — they unblock browser-based MCP clients (Claude.ai,
+ChatGPT) without breaking the simpler ones.
+
+**1. Ceremonial OAuth 2.1 endpoints (`src/rbi_source_mcp/oauth.py`).**
+Claude.ai walks RFC 8414 + RFC 9728 + RFC 7591 BEFORE attempting the
+MCP handshake; if those discovery endpoints 404, the connector bails
+with "Couldn't reach the MCP server." The corpus is public RBI text —
+no actual access control to enforce — but the protocol still requires
+the endpoints to exist. New endpoints:
+  - `GET /.well-known/oauth-protected-resource[/mcp]` (RFC 9728)
+  - `GET /.well-known/oauth-authorization-server` (RFC 8414)
+  - `POST /register` (RFC 7591 dynamic client registration)
+  - `GET /authorize` — auto-approves with PKCE, no user prompt
+  - `POST /token` — code+verifier → bearer
+  - `verify_token` stub for future use; /mcp/ does NOT gate on the bearer
+    so Claude Code without OAuth keeps working
+
+PKCE (S256) is enforced; codes are one-shot. In-memory store with TTLs.
+Tests in `tests/test_oauth.py` (9 cases) cover the full handshake plus
+the rate-limit exclusion (Claude.ai hits the discovery endpoints
+multiple times per setup; they don't count against the 60/min budget).
+
+**2. ASGI path normalizer (`_NormalizeMcpPath`).** After OAuth
+succeeds, Claude.ai POSTs to `/mcp` (no trailing slash) carrying the
+bearer token. Starlette's default behavior was a 307 redirect to
+`/mcp/`, which Claude.ai didn't follow — token dropped, connector
+retried OAuth ~3-4x, then bailed with "Authorization with the MCP
+server failed." Just disabling redirect_slashes wasn't enough:
+`Mount("/mcp", ...)` strips its prefix and the inner streamable-HTTP
+session manager 404s on empty path. Fix: pure-ASGI middleware (runs
+BEFORE routing) rewrites `scope.path = "/mcp/"` transparently. Added
+`tests/test_http_middleware.py::test_mcp_no_trailing_slash_does_not_redirect`.
+
+**3. Tool name rename: dots → underscores.** Claude.ai's frontend
+validator rejects tool names that don't match
+`^[a-zA-Z0-9_-]{1,64}$`. Renamed:
+  - `rbi.check_compliance` → `rbi_check_compliance`
+  - `rbi.search`           → `rbi_search`
+  - `rbi.get_document`     → `rbi_get_document`
+  - `rbi.check_current`    → `rbi_check_current`
+
+Renamed across `server.py` tool definitions + dispatch, all tests, the
+integration test script, and the README. Historical CHANGELOG entries
+preserved with the original dotted names. Existing Claude Code users
+auto-pick-up the new names via `tools/list` (no manual reconfig);
+saved chats with old tool calls in history aren't affected.
+
+**4. Integration test updated.** `t_307_redirect` (which asserted the
+redirect for /mcp without slash) is now `t_no_slash_no_redirect`
+(asserts 200 directly).
+
 ### v0.5.8 — first hosted deploy live
 
 The hosted endpoint is **live** at `https://rbi-source.harshil.ai/mcp/`

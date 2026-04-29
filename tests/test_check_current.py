@@ -1,4 +1,4 @@
-"""Tests for the rbi.check_current tool — the headline DX guarantee.
+"""Tests for the rbi_check_current tool — the headline DX guarantee.
 
 Covers the v0.1 contract (revised after live crawl revealed the real URL
 patterns). Every input gets a structured response, nothing silently fails:

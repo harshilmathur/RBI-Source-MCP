@@ -1,4 +1,4 @@
-"""The headline tool: rbi.check_current.
+"""The headline tool: rbi_check_current.
 
 Given an RBI URL or textual reference, return current/withdrawn/superseded
 plus the replacement document when known. v0.1 contract (revised after live

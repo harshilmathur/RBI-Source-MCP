@@ -2,12 +2,12 @@
 
 Exposes four tools at v0.1.5:
 
-    rbi.check_compliance(text, topic_hint?) -- HEADLINE: paste a clause/PRD/policy,
+    rbi_check_compliance(text, topic_hint?) -- HEADLINE: paste a clause/PRD/policy,
                                                get back ranked relevant RBI provisions
                                                with citations. Retrieval-only.
-    rbi.search(query, filters?)             -- direct keyword/topic retrieval over MD chunks
-    rbi.get_document(document_id, ...)      -- fetch a Master Direction's metadata + ToC
-    rbi.check_current(url_or_ref)           -- safety/utility: is this URL withdrawn?
+    rbi_search(query, filters?)             -- direct keyword/topic retrieval over MD chunks
+    rbi_get_document(document_id, ...)      -- fetch a Master Direction's metadata + ToC
+    rbi_check_current(url_or_ref)           -- safety/utility: is this URL withdrawn?
 
 Run locally:
     python -m rbi_source_mcp.server
@@ -179,7 +179,7 @@ def _build_server() -> Server:
     async def list_tools() -> list[Tool]:
         return [
             Tool(
-                name="rbi.check_compliance",
+                name="rbi_check_compliance",
                 description=(
                     "HEADLINE. Paste free text (a clause, PRD section, draft policy paragraph, "
                     "code comment) and get back ranked relevant Master Direction provisions with "
@@ -227,7 +227,7 @@ def _build_server() -> Server:
                 },
             ),
             Tool(
-                name="rbi.search",
+                name="rbi_search",
                 description=(
                     "Direct keyword/topic search over Master Direction chunks. Use this when "
                     "the user has a clean query like 'what are the net-worth requirements for PAs' "
@@ -257,7 +257,7 @@ def _build_server() -> Server:
                 },
             ),
             Tool(
-                name="rbi.get_document",
+                name="rbi_get_document",
                 description=(
                     "Fetch a Master Direction's metadata + table of contents. Pass include_text=true "
                     "to also get the full assembled body text. Useful when check_compliance or search "
@@ -290,7 +290,7 @@ def _build_server() -> Server:
                 },
             ),
             Tool(
-                name="rbi.check_current",
+                name="rbi_check_current",
                 description=(
                     "Safety/utility tool: paste an RBI URL (Master Direction or notification page) "
                     "and learn whether it's current, withdrawn, or out-of-corpus. Useful for "
@@ -336,7 +336,7 @@ def _build_server() -> Server:
         # at modest concurrency could brown out the entire server. See
         # /cso security review finding #1 (2026-04-29).
 
-        if name == "rbi.check_compliance":
+        if name == "rbi_check_compliance":
             text = args.get("text", "") or ""
             if len(text) > MAX_INPUT_LEN:
                 return [_input_too_large_response(name, "text", len(text))]
@@ -352,7 +352,7 @@ def _build_server() -> Server:
                 return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
-        if name == "rbi.search":
+        if name == "rbi_search":
             query = args.get("query", "") or ""
             if len(query) > MAX_INPUT_LEN:
                 return [_input_too_large_response(name, "query", len(query))]
@@ -368,7 +368,7 @@ def _build_server() -> Server:
                 return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
-        if name == "rbi.get_document":
+        if name == "rbi_get_document":
             try:
                 result = await asyncio.to_thread(
                     _run_get_document,
@@ -381,7 +381,7 @@ def _build_server() -> Server:
                 return [_error_response(name, "tool_failed", exc)]
             return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
-        if name == "rbi.check_current":
+        if name == "rbi_check_current":
             try:
                 result = await asyncio.to_thread(
                     _run_check_current,

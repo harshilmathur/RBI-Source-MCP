@@ -70,7 +70,7 @@ async def test_mcp_endpoint_returns_sse_with_disclaimer_for_search() -> None:
             request = {
                 "jsonrpc": "2.0",
                 "method": "tools/call",
-                "params": {"name": "rbi.search", "arguments": {"query": "payment aggregator", "limit": 1}},
+                "params": {"name": "rbi_search", "arguments": {"query": "payment aggregator", "limit": 1}},
                 "id": 1,
             }
             response = await client.post(
