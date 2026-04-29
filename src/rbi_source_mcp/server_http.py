@@ -18,6 +18,7 @@ Then a client can connect with:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import contextlib
 import os
 import sys
@@ -58,6 +59,33 @@ def _load_index_html() -> bytes | None:
         _index_cache["bytes"] = _INDEX_PATH.read_bytes()
         _index_cache["mtime"] = st.st_mtime
     return _index_cache["bytes"]  # type: ignore[return-value]
+
+
+async def _prewarm_embedder() -> None:
+    """Run the bge-small embedder once at startup so the first user request
+    doesn't pay the cold-start tax. Runs in a thread (CPU-bound) so the
+    asyncio event loop stays free for /health and any pre-warmup MCP probes.
+
+    Failures are logged and swallowed: the embedder is best-effort. If this
+    fails (model download failed, OOM, etc.) the server still serves —
+    rbi_search and rbi_check_compliance fall back to FTS5-only retrieval
+    via the existing try/except in mcp/search.py and mcp/check_compliance.py.
+    """
+    try:
+        t0 = time.time()
+        # Local import: avoids loading sentence-transformers at module
+        # import time (which would slow `rbi-source-mcp-http --help` etc.).
+        from .indexer.embed import embed_query
+
+        logger.info("embedder.prewarm.start")
+        await asyncio.to_thread(embed_query, "warmup query")
+        logger.info("embedder.prewarm.done", duration_s=round(time.time() - t0, 2))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "embedder.prewarm.fail",
+            error=str(exc),
+            note="server still serves; first real call will retry the load",
+        )
 
 
 def _wants_html(request: Request) -> bool:
@@ -304,6 +332,13 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
         async with session_manager.run():
             logger.info("http.lifespan.start", version=__version__)
+            # Pre-warm the embedder so the first user request doesn't pay
+            # the cold-start tax (model download + load = ~75-200s on a
+            # fresh Fly machine). Runs in a thread so we don't block the
+            # event loop, and on a separate task so app startup completes
+            # before warmup finishes — the /health probe can flip green
+            # while the embedder loads in the background.
+            asyncio.create_task(_prewarm_embedder())
             yield
             logger.info("http.lifespan.stop")
 
