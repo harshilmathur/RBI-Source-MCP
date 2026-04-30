@@ -273,6 +273,66 @@
   p { margin: 0 0 16px; }
   p:last-child { margin-bottom: 0; }
 
+  /* ---------- "What it does" — punchy lead + 3-step flow ---------- */
+  .lead {
+    font-style: italic;
+    font-size: clamp(20px, 2.6vw, 24px);
+    line-height: 1.4;
+    color: var(--ink);
+    margin: 0 0 32px;
+    max-width: 640px;
+  }
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    border-top: 1px solid var(--rule);
+    margin: 8px 0 24px;
+  }
+  .flow-step {
+    padding: 26px 28px 28px;
+    border-right: 1px solid var(--rule-faint);
+    border-bottom: 1px solid var(--rule);
+    position: relative;
+  }
+  .flow-step:last-child { border-right: 0; }
+  .flow-num {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-feature-settings: "tnum";
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    margin-bottom: 10px;
+  }
+  .flow-step h3 {
+    font-family: var(--serif);
+    font-size: 18px;
+    font-weight: 500;
+    line-height: 1.3;
+    margin: 0 0 8px;
+    color: var(--ink-strong);
+  }
+  .flow-step p {
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--ink);
+    margin: 0;
+  }
+  .caveat {
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--ink-muted);
+    border-left: 2px solid var(--rule);
+    padding: 4px 14px;
+    margin: 16px 0 0;
+    max-width: 720px;
+  }
+  .caveat em {
+    color: var(--accent);
+    font-style: italic;
+    font-weight: 500;
+  }
+
   /* ---------- Stat strip ---------- */
   .stats {
     display: grid;
@@ -468,6 +528,9 @@
     .stats { border-bottom: 1px solid var(--rule); }
     .tools { grid-template-columns: 1fr; }
     .tool, .tool:nth-child(2n) { border-right: 1px solid var(--rule); }
+    .flow { grid-template-columns: 1fr; }
+    .flow-step { border-right: 0; border-bottom: 1px solid var(--rule-faint); }
+    .flow-step:last-child { border-bottom: 1px solid var(--rule); }
   }
 
   /* ---------- Reduced motion ---------- */
@@ -537,11 +600,31 @@
 <!-- 3. WHAT IT DOES                                               -->
 <!-- ============================================================ -->
 <section id="what">
-  <div class="wrap">
-    <h2>What it does</h2>
-    <p>Fintech builders writing a clause, PRD section, or partner agreement currently ping their compliance team in Slack and wait hours-to-days. Or they Google <code>rbi.org.in</code>, land on an ASP.NET page that may or may not be a withdrawn circular, and ship against rules superseded three years ago.</p>
-    <p>RBI Source MCP collapses that loop. Paste a clause or section into Claude, ChatGPT, or Cursor with this MCP connected, and you get back the relevant Reserve Bank of India provisions with citations: paragraph anchor, official URL, RBI reference number, last-updated date, current/withdrawn status.</p>
-    <p><em>Retrieval-only by design.</em> The MCP doesn't issue compliance verdicts. The LLM consuming the tool synthesizes from the cited provisions; the user decides. Verify every result with a qualified compliance reviewer before acting.</p>
+  <div class="wrap-wide">
+    <div class="wrap" style="padding:0;">
+      <h2>What it does</h2>
+      <p class="lead">Paste a clause. Get cited RBI provisions back.</p>
+    </div>
+
+    <div class="flow" role="list" aria-label="How it works in three steps">
+      <div class="flow-step" role="listitem">
+        <div class="flow-num">01</div>
+        <h3>You paste</h3>
+        <p>A clause, PRD section, or draft policy paragraph into Claude, ChatGPT, Cursor, or any MCP-capable client.</p>
+      </div>
+      <div class="flow-step" role="listitem">
+        <div class="flow-num">02</div>
+        <h3>The MCP retrieves</h3>
+        <p>Hybrid search over 803 RBI publications: Master Directions, Circulars, FAQs, Press Releases. Returns the relevant provisions ranked.</p>
+      </div>
+      <div class="flow-step" role="listitem">
+        <div class="flow-num">03</div>
+        <h3>You get citations</h3>
+        <p>Paragraph anchor, official RBI URL, reference number, last-updated date, current/withdrawn status. Then your LLM synthesizes.</p>
+      </div>
+    </div>
+
+    <p class="caveat"><em>Retrieval-only.</em> The MCP doesn't issue compliance verdicts. Your LLM synthesizes from the cited provisions; you verify with a qualified human compliance reviewer before acting.</p>
   </div>
 </section>
 
@@ -754,7 +837,6 @@
   <div class="wrap">
     <h2>Architecture</h2>
     <ul>
-      <li>Hosted on Fly.io. Single machine in <code>bom</code> (Mumbai), always-on, shared-cpu-1x with 1 GB RAM. Volume-mounted SQLite at <code>/data/db.sqlite</code>.</li>
       <li>Hybrid retrieval. SQLite FTS5 for sparse (BM25) plus sqlite-vec for dense vectors (384-dim, <code>bge-small-en-v1.5</code> via sentence-transformers). Reciprocal Rank Fusion at k=60 calibrated against a 25-case eval set.</li>
       <li>Public, unauthenticated, retrieval-only. OAuth 2.1 ceremonial endpoints (RFC 8414, 9728, 7591) for clients that require the discovery walk; tokens are not gated on the actual MCP path.</li>
       <li>Streamable-HTTP transport. Per-IP rate limit (60 req/min) on <code>/mcp/</code>, body-size cap (200 KB), HTTP-level disclaimer banner, embedder runs in a thread pool so the asyncio event loop never blocks.</li>
