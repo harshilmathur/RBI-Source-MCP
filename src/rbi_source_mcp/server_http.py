@@ -33,7 +33,7 @@ from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from . import __version__
@@ -59,6 +59,20 @@ def _load_index_html() -> bytes | None:
         _index_cache["bytes"] = _INDEX_PATH.read_bytes()
         _index_cache["mtime"] = st.st_mtime
     return _index_cache["bytes"]  # type: ignore[return-value]
+
+
+# Whitelist of static files served from /<filename>. Restricting to an
+# explicit allowlist prevents path-traversal nonsense — only these exact
+# filenames map to files under _STATIC_DIR. Add a new entry here when
+# adding a new static asset; never construct the path from request input.
+_STATIC_ALLOWLIST: dict[str, tuple[str, str]] = {
+    "/favicon.ico":          ("favicon.ico",          "image/x-icon"),
+    "/favicon.svg":          ("favicon.svg",          "image/svg+xml"),
+    "/favicon-16.png":       ("favicon-16.png",       "image/png"),
+    "/favicon-32.png":       ("favicon-32.png",       "image/png"),
+    "/favicon-512.png":      ("favicon-512.png",      "image/png"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+}
 
 
 async def _prewarm_embedder() -> None:
@@ -532,11 +546,44 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         _banner_cache["ts"] = now
         return JSONResponse(payload)
 
+    async def static_asset(request: Request) -> Response:
+        """Serve a whitelisted static file from src/rbi_source_mcp/static/.
+
+        Looks the request path up in `_STATIC_ALLOWLIST` (path traversal is
+        impossible because the filename is keyed off the URL, not constructed
+        from it). Returns 404 for anything not in the list. Cached for 24h
+        because favicons rarely change and browsers retry on 404.
+        """
+        entry = _STATIC_ALLOWLIST.get(request.url.path)
+        if entry is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        filename, content_type = entry
+        path = _STATIC_DIR / filename
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            logger.warning("static.asset_missing", path=str(path))
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=86400, immutable",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     app = Starlette(
         debug=False,
         routes=[
             Route("/", banner),
             Route("/health", health),
+            # Favicon set — declared in index.html via <link>. Each is a
+            # whitelisted entry in _STATIC_ALLOWLIST.
+            *[
+                Route(p, static_asset, methods=["GET"])
+                for p in _STATIC_ALLOWLIST
+            ],
             # OAuth 2.1 ceremonial endpoints. Claude.ai's connector flow
             # walks RFC 8414 + RFC 9728 + RFC 7591 BEFORE attempting the
             # MCP handshake; if these 404, the connector says "Couldn't

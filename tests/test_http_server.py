@@ -92,6 +92,82 @@ async def test_banner_returns_html_for_browser_accept() -> None:
 
 
 @pytest.mark.asyncio
+async def test_favicon_endpoints_serve_with_correct_content_types() -> None:
+    """Each whitelisted favicon URL must serve its file with the right
+    Content-Type and a long Cache-Control. Modern browsers fan out across
+    multiple <link rel="icon">; if any 404s, the user sees a console warning
+    and the browser falls back to /favicon.ico (which is the cheapest probe
+    so we want it to work too)."""
+    from rbi_source_mcp.server_http import build_asgi_app
+
+    cases = [
+        ("/favicon.svg",          "image/svg+xml"),
+        ("/favicon-16.png",       "image/png"),
+        ("/favicon-32.png",       "image/png"),
+        ("/favicon-512.png",      "image/png"),
+        ("/apple-touch-icon.png", "image/png"),
+        ("/favicon.ico",          "image/x-icon"),
+    ]
+    app = build_asgi_app(stateless=True)
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            for url, expected_ct in cases:
+                r = await client.get(url)
+                assert r.status_code == 200, f"{url} → {r.status_code}"
+                assert expected_ct in r.headers.get("content-type", ""), (
+                    f"{url} content-type={r.headers.get('content-type')}"
+                )
+                assert "max-age" in r.headers.get("cache-control", ""), (
+                    f"{url} missing cache-control"
+                )
+                assert len(r.content) > 0, f"{url} empty body"
+
+
+@pytest.mark.asyncio
+async def test_static_asset_path_traversal_returns_404() -> None:
+    """The static handler keys off an allowlist, not a constructed file
+    path — but verify defensively that traversal attempts get a clean 404,
+    not a leak. This guards regression if someone ever swaps the allowlist
+    for a `_STATIC_DIR / request.path_params['name']` pattern."""
+    from rbi_source_mcp.server_http import build_asgi_app
+
+    app = build_asgi_app(stateless=True)
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # Anything not in _STATIC_ALLOWLIST should miss routing entirely
+            # (Starlette returns 404). This isn't path traversal in the strict
+            # sense, but it's the contract: only listed names are reachable.
+            for url in ("/favicon-99.png", "/index.html", "/server.py", "/etc/passwd"):
+                r = await client.get(url)
+                assert r.status_code == 404, f"{url} returned {r.status_code} (expected 404)"
+
+
+@pytest.mark.asyncio
+async def test_homepage_links_to_all_favicon_files() -> None:
+    """The <link rel="icon"> tags in index.html must reference URLs that
+    actually exist as routes. Otherwise tabs render the default browser
+    fallback and the favicon ships dead."""
+    from rbi_source_mcp.server_http import _STATIC_ALLOWLIST, build_asgi_app
+
+    app = build_asgi_app(stateless=True)
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(
+                "/",
+                headers={"Accept": "text/html,application/xhtml+xml"},
+            )
+    body = r.text
+    # Every favicon URL declared in <link rel="icon"> must be in the allowlist.
+    for url in ("/favicon.svg", "/favicon-32.png", "/favicon-16.png",
+                "/apple-touch-icon.png", "/favicon.ico"):
+        assert url in body, f"<link> for {url} missing from index.html"
+        assert url in _STATIC_ALLOWLIST, f"{url} declared in HTML but not whitelisted"
+
+
+@pytest.mark.asyncio
 async def test_banner_returns_json_when_client_explicitly_wants_json() -> None:
     """A client that includes Accept: application/json (most MCP clients do)
     must get JSON even if it ALSO accepts text/html. The asymmetric rule
