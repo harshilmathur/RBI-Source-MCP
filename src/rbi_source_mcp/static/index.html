@@ -468,6 +468,74 @@
   .pair > div h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.07em;
                    color: var(--ink-muted); margin: 0 0 8px; font-weight: 500; }
 
+  /* ---------- Real-conversation chat examples ---------- */
+  .chat-heading {
+    font-family: var(--serif);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 0 0 16px;
+  }
+  .chat-example {
+    padding: 28px 0;
+    border-top: 1px solid var(--rule-faint);
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  .chat-example:first-of-type { border-top: 1px solid var(--rule); }
+  .chat-example:last-of-type  { border-bottom: 1px solid var(--rule); }
+  .chat-q {
+    background: var(--ink-strong);
+    color: var(--bg);
+    padding: 12px 18px;
+    border-radius: 14px 14px 4px 14px;
+    margin-left: 22%;
+    margin-bottom: 22px;
+    font-size: 16px;
+    line-height: 1.5;
+    font-style: italic;
+  }
+  .chat-a {
+    font-size: 15px;
+    line-height: 1.65;
+    color: var(--ink);
+  }
+  .chat-a-meta {
+    font-size: 11.5px;
+    color: var(--ink-muted);
+    margin-bottom: 12px;
+    letter-spacing: 0.04em;
+  }
+  .tool-call {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-style: normal;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 1px 7px;
+    border-radius: 3px;
+    letter-spacing: 0.02em;
+    margin: 0 2px;
+    text-transform: none;
+  }
+  .chat-a p { margin: 0 0 12px; }
+  .chat-a strong { font-weight: 500; color: var(--ink-strong); }
+  .chat-a-legal {
+    display: block;
+    font-size: 13px;
+    color: var(--ink-muted);
+    margin-top: 18px;
+    padding-left: 14px;
+    border-left: 2px solid var(--rule);
+    font-style: italic;
+  }
+  @media (max-width: 640px) {
+    .chat-q { margin-left: 8%; }
+  }
+
   /* ---------- Architecture bullets ---------- */
   .arch ul { padding-left: 0; list-style: none; margin: 0; }
   .arch li {
@@ -567,7 +635,6 @@
   <div class="top-inner">
     <a href="/" class="top-name">RBI Source MCP<span class="dot">.</span></a>
     <nav class="top-links" aria-label="Primary">
-      <span class="top-pill" title="Live in Mumbai (bom region)"><span class="live"></span>Live · BOM</span>
       <a href="#install">Install</a>
       <a href="#tools">Tools</a>
       <a href="#sample">API</a>
@@ -733,12 +800,12 @@
           <td><code>claude mcp add rbi-source --transport http https://rbi-source.harshil.ai/mcp/</code></td>
         </tr>
         <tr>
-          <td>Claude.ai &amp; Claude Desktop (Pro / Team / Enterprise)</td>
-          <td>Settings → Connectors → Add custom connector → paste the URL.</td>
+          <td>Claude.ai / Claude Desktop</td>
+          <td>Settings → Connectors → Add custom connector → paste the URL. Requires a paid plan (Pro / Team / Enterprise).</td>
         </tr>
         <tr>
-          <td>ChatGPT (Plus / Pro / Team / Enterprise)</td>
-          <td>Settings → Connectors → Create custom connector → paste the URL.</td>
+          <td>ChatGPT</td>
+          <td>Settings → Connectors → Create custom connector → paste the URL. Requires a paid plan (Plus / Pro / Team / Enterprise).</td>
         </tr>
         <tr>
           <td>Cursor</td>
@@ -765,7 +832,7 @@
           <td>Edit <code>~/.config/zed/settings.json</code>. <a href="https://github.com/harshilmathur/RBI-Source-MCP#zed" rel="noopener">Snippet</a></td>
         </tr>
         <tr>
-          <td>Anything else (streamable-HTTP)</td>
+          <td>Any streamable HTTP MCP client</td>
           <td>Point it at <code>https://rbi-source.harshil.ai/mcp/</code>.</td>
         </tr>
       </tbody>
@@ -782,7 +849,7 @@
   <div class="wrap-wide">
     <div class="wrap" style="padding:0;">
       <h2>Sample interaction</h2>
-      <p>An LLM asks <em>"What are the net-worth requirements for a payment aggregator?"</em>, decides to call <code>rbi_check_compliance</code>, gets back a citation-grade answer:</p>
+      <p>A connected client asks <em>"What are the net-worth requirements for a payment aggregator?"</em>, calls <code>rbi_check_compliance</code>, and returns the cited RBI provision below:</p>
     </div>
 
     <div class="pair">
@@ -831,6 +898,38 @@
 }</code></pre>
       </div>
     </div>
+
+    <!-- Real-conversation examples — what the consuming LLM does with the
+         JSON envelope above. Trimmed from actual sessions; the long-form
+         answers (with all citations, follow-up offers) live in the GitHub
+         repo issue tracker if anyone wants the unabridged transcripts. -->
+    <div class="wrap" style="padding:0; margin-top:48px;">
+      <h3 class="chat-heading">In a real Claude conversation</h3>
+    </div>
+
+    <article class="chat-example">
+      <div class="chat-q">Tell me about lending FLDG, can I do 10% FLDG?</div>
+      <div class="chat-a">
+        <div class="chat-a-meta">Claude · used <span class="tool-call">→ rbi_search</span> twice</div>
+        <p><strong>On the cited RBI materials, 10% DLG is outside the published framework: the cap is 5% of the loan portfolio, specified upfront.</strong></p>
+        <p><strong>Terminology.</strong> RBI calls this Default Loss Guarantee (DLG); the industry says FLDG. Originally introduced via circular DOR.CRE.REC.21/21.07.001/2023-24 dated June 8, 2023, the framework now sits inside the Digital Lending chapters of the various Credit Facilities Directions.</p>
+        <p><strong>The 5% cap.</strong> Per the DLG guidelines and the RBI FAQ (Nov 5, 2024), the total amount of DLG cover on any outstanding portfolio shall not exceed 5% of that loan portfolio.</p>
+        <p>Relabelling the arrangement would not change treatment if it functions as a portfolio-linked guarantee.</p>
+        <em class="chat-a-legal">Not legal advice. Verify against the official RBI DLG FAQ and consult a qualified compliance reviewer before acting.</em>
+      </div>
+    </article>
+
+    <article class="chat-example">
+      <div class="chat-q">Is it compliant to onboard merchants only with an email and password as a PA?</div>
+      <div class="chat-a">
+        <div class="chat-a-meta">Claude · used <span class="tool-call">→ rbi_check_compliance</span></div>
+        <p><strong>On the cited PA Direction, email and password alone would not satisfy merchant onboarding requirements.</strong> The PA Master Direction (RBI/DPSS/2025-26/141) sets out CDD, merchant identification, and security-assessment obligations that authentication credentials cannot satisfy on their own.</p>
+        <p><strong>Section 13(a) — Customer Due Diligence.</strong> A PA must undertake CDD per the MD on KYC, retrieving merchant records from the CKYCR with consent. Identity proof, address proof, beneficial-ownership for non-individuals — none of which an email + password can satisfy.</p>
+        <p><strong>Section 13(e) — Merchant identification.</strong> The PA must allot an MCC and Merchant ID / Terminal ID, and capture the merchant's name correctly for every transaction.</p>
+        <p><strong>Section 1.4 (Tech &amp; Security annex).</strong> A comprehensive security assessment is required during onboarding.</p>
+        <em class="chat-a-legal">Not legal advice. Verify with a qualified compliance reviewer before acting.</em>
+      </div>
+    </article>
   </div>
 </section>
 
@@ -857,10 +956,9 @@
   <div class="wrap">
     <h2>Disclaimer</h2>
     <div class="disclaimer">
-      <p><span class="lead">Not legal advice.</span> RBI Source MCP returns source-grounded retrieval over RBI publications (Master Directions, Circulars, Master Circulars, Press Releases, FAQs); it does not issue compliance verdicts or regulatory opinions.</p>
+      <p><span class="lead">Source retrieval only.</span> RBI Source MCP returns cited passages from RBI publications. It does not interpret those passages, issue opinions, or determine compliance. Any summary or conclusion is produced outside this server and must be independently reviewed against the official RBI text.</p>
       <ol>
         <li><strong>Not legal advice.</strong> The MCP does not interpret, opine, or advise.</li>
-        <li><strong>Retrieval-only.</strong> Citations are surfaced; verdicts are the consuming LLM's, and decisions are the user's.</li>
         <li><strong>Provisions may have been amended, withdrawn, or superseded</strong> after this corpus's last refresh. Check the <code>official_url</code> on each provision for the live RBI page.</li>
         <li><strong>Verify with a qualified human compliance reviewer</strong> before acting on any provision returned.</li>
         <li><strong>Unofficial.</strong> This is a community-maintained open-source tool and is <em>not</em> affiliated with, endorsed by, or sponsored by the Reserve Bank of India.</li>
@@ -880,7 +978,7 @@
       <span style="margin: 0 10px; color: var(--rule);">·</span>
       <a href="https://github.com/harshilmathur/RBI-Source-MCP/issues" rel="noopener">Open an issue</a>
     </div>
-    <div class="tm">RBI® is a trademark of the Reserve Bank of India.</div>
+    <div class="tm">Unofficial, open-source MCP server. Not affiliated with or endorsed by the Reserve Bank of India. RBI® is a trademark of the Reserve Bank of India.</div>
   </div>
 </footer>
 
