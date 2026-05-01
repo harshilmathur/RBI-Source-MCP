@@ -62,4 +62,4 @@ If you find a security issue, please **don't** open a public issue. See [SECURIT
 
 ## License
 
-By contributing, you agree your contributions are licensed under [Apache-2.0](LICENSE), the same license as the project.
+By contributing, you agree your contributions are licensed under [MIT](LICENSE), the same license as the project.
