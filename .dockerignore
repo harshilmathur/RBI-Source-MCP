@@ -1,8 +1,7 @@
-# Keep the build context lean. The seed file `db.sqlite.initial` at the
-# repo root IS needed for first-deploy bootstrap (baked into the image),
-# but the working `data/` directory (171 MB+ live DB plus journal/wal/shm
-# files) must NOT ship — the volume at /data takes over at runtime and
-# the entrypoint shim seeds it from /app/initial-db.sqlite when empty.
+# Keep the Docker build context lean. The runtime image needs source +
+# pyproject.toml + README + LICENSE — nothing else. The `data/` directory
+# (live DB + WAL/SHM, can hit hundreds of MB) and all dev/scratch
+# artifacts must NOT ship.
 
 .git
 .github

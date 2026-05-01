@@ -8,6 +8,7 @@ FROM python:3.12-slim
 #   - poppler-utils → pdftotext (PDF extraction quality gate, ships at v1.0)
 #   - sqlite3       → CLI for ops debugging
 #   - ca-certificates → httpx TLS to rbi.org.in
+#   - gosu          → drop privileges in the entrypoint shim (see USER note below)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         poppler-utils \
@@ -17,14 +18,12 @@ RUN apt-get update \
         gosu \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root runtime user. /cso review (#3, 2026-04-29) flagged the production
-# Dockerfile for missing USER. Fly's Firecracker VM is the outer isolation
-# boundary, but defense-in-depth says the in-container process should not
-# be UID 0 — that way a future RCE finding can't immediately persist by
-# corrupting /app or /data. We DON'T set USER here in the Dockerfile
-# because the entrypoint shim needs to run as root briefly to chown the
-# Fly volume mount at /data (which mounts root:root by default). The shim
-# does `exec gosu rbi "$@"` to drop privileges after the chown.
+# Non-root runtime user. Defense-in-depth: a future RCE finding in any of the
+# Python deps shouldn't immediately get root inside the container. We DON'T
+# set USER here in the Dockerfile because the entrypoint shim needs to run as
+# root briefly to chown the volume mount at /data (which mounts root:root by
+# default on most platforms). The shim does `exec gosu rbi "$@"` to drop
+# privileges before the actual server process starts.
 RUN useradd --system --uid 1001 --gid 0 --shell /usr/sbin/nologin --home-dir /app rbi
 
 WORKDIR /app
@@ -37,7 +36,8 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .
 
 # Data volume mounted at runtime:
-#   /data/db.sqlite       (corpus, atomic-swapped on weekly refresh)
+#   /data/db.sqlite       (corpus — see the README's self-host section for
+#                          how to populate it on a fresh deployment)
 #   /data/db-prev.sqlite  (rollback target)
 #   /data/telemetry.jsonl (anonymous opt-out, daily-rotated)
 ENV RBI_SOURCE_DB=/data/db.sqlite
@@ -45,24 +45,14 @@ ENV PORT=8080
 VOLUME /data
 EXPOSE 8080
 
-# First-deploy seed corpus. Fly's volume mount at /data takes over at
-# runtime, hiding anything COPY'd into /data — so we stage the seed at
-# /app/initial-db.sqlite and copy it onto the volume on first boot via
-# the entrypoint shim below. The shim is idempotent: on subsequent boots,
-# /data/db.sqlite already exists (from the volume) and the copy is a
-# no-op. After the first successful deploy hands off to the weekly
-# refresh GitHub Action, the COPY below can be dropped from this
-# Dockerfile to reclaim the ~170 MB image bloat.
-COPY db.sqlite.initial /app/initial-db.sqlite
 # Entrypoint shim runs once per machine boot:
-#   1. (root path) ensure /data is owned by the rbi user — Fly volumes mount
-#      root:root by default, so the non-root runtime can't write without this.
-#   2. (root path) seed /data/db.sqlite from /app/initial-db.sqlite if the
-#      volume is empty (idempotent — no-op on subsequent boots).
-#   3. exec the actual command under the rbi user via gosu, dropping all
+#   1. (root path) ensure /data is owned by the rbi user — host volume mounts
+#      typically land as root:root, so the non-root runtime can't write
+#      without this.
+#   2. exec the actual command under the rbi user via gosu, dropping all
 #      root capabilities for the running server process.
 # If somehow we're already running non-root (e.g., `docker run --user 1001`),
-# the shim skips chown/seed and just execs — caller is on their own to ensure
+# the shim skips the chown and just execs — caller is on their own to ensure
 # /data is writable.
 RUN printf '%s\n' \
         '#!/bin/sh' \
@@ -70,16 +60,8 @@ RUN printf '%s\n' \
         'if [ "$(id -u)" = "0" ]; then' \
         '  mkdir -p "$(dirname "$RBI_SOURCE_DB")"' \
         '  chown -R rbi:root /data 2>/dev/null || true' \
-        '  if [ ! -f "$RBI_SOURCE_DB" ] && [ -f /app/initial-db.sqlite ]; then' \
-        '    echo "[bootstrap] seeding $RBI_SOURCE_DB from baked corpus"' \
-        '    cp /app/initial-db.sqlite "$RBI_SOURCE_DB"' \
-        '    chown rbi:root "$RBI_SOURCE_DB"' \
-        '  fi' \
         '  exec gosu rbi "$@"' \
         'else' \
-        '  if [ ! -f "$RBI_SOURCE_DB" ] && [ -f /app/initial-db.sqlite ]; then' \
-        '    cp /app/initial-db.sqlite "$RBI_SOURCE_DB"' \
-        '  fi' \
         '  exec "$@"' \
         'fi' \
         > /app/entrypoint.sh \

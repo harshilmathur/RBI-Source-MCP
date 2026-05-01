@@ -1,0 +1,46 @@
+name: Feature request
+description: A new tool, content family, topic hint, or significant change.
+title: "[feat] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem?
+      description: |
+        Describe the user pain. Don't lead with the solution. The best feature requests describe a real workflow that the project doesn't support.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Optional. If you have one, sketch it. Otherwise leave blank.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Rough scope
+      options:
+        - "new tool"
+        - "new content family"
+        - "topic-hint mapping"
+        - "retrieval / ranking change"
+        - "deployment / hosting"
+        - "docs / DX"
+        - "other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Concrete examples
+      description: |
+        If this is a retrieval change or new tool: 2-3 example queries + expected results help a lot. We may add them as eval cases.

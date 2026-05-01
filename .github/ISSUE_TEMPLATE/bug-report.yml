@@ -1,0 +1,46 @@
+name: Bug report
+description: Something is broken that isn't a corpus-quality issue (use the corpus template for those).
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of what went wrong, end-to-end. One paragraph is fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal repro. Include the exact command, request payload, or client setup.
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: |
+        - Hosted endpoint or self-host? Commit SHA / image if self-host.
+        - Client (Claude Code 1.x, Claude.ai web, ChatGPT, Cursor, ...)
+        - OS / Python version (if relevant)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Stack trace, server log, or error envelope JSON. Wrap in a code fence.
+      render: text
