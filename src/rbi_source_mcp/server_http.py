@@ -539,7 +539,7 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
                 "issue legal opinions. Verify every citation with a qualified "
                 "compliance reviewer before acting."
             ),
-            "license": "Apache-2.0",
+            "license": "MIT",
             "source": "https://github.com/harshilmathur/RBI-Source-MCP",
         }
         _banner_cache["data"] = payload

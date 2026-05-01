@@ -4,6 +4,19 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.5.12 — license change Apache-2.0 → MIT
+
+Changed the project license from Apache-2.0 to MIT. MIT is the more
+common choice for small Python tooling like this and makes contribution
++ downstream embedding simpler. No code changes; license/classifier
+updates in 8 files: LICENSE (full text replaced), pyproject.toml
+(classifier), README.md (badge + footer), CONTRIBUTING.md (clause),
+server_http.py (banner JSON `license` field), static/index.html (trust
+strip, architecture bullet, footer).
+
+The earlier v0.1 CHANGELOG entry that says 'Apache-2.0 license' is left
+unchanged as a historical record of what shipped at v0.1.
+
 ### v0.5.10 — Claude.ai connector compatibility
 
 Three fixes landed in sequence chasing Claude.ai's "Custom Connectors"
