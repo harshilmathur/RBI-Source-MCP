@@ -18,7 +18,6 @@ Then a client can connect with:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import contextlib
 import os
 import sys
@@ -75,24 +74,37 @@ _STATIC_ALLOWLIST: dict[str, tuple[str, str]] = {
 }
 
 
-async def _prewarm_embedder() -> None:
-    """Run the bge-small embedder once at startup so the first user request
-    doesn't pay the cold-start tax. Runs in a thread (CPU-bound) so the
-    asyncio event loop stays free for /health and any pre-warmup MCP probes.
+def _prewarm_embedder_sync() -> None:
+    """Run the bge-small embedder once at lifespan startup so the first
+    user request doesn't pay the cold-start tax.
 
-    Failures are logged and swallowed: the embedder is best-effort. If this
-    fails (model download failed, OOM, etc.) the server still serves —
-    rbi_search and rbi_check_compliance fall back to FTS5-only retrieval
-    via the existing try/except in mcp/search.py and mcp/check_compliance.py.
+    Two important behaviors:
+
+    1. Synchronous (no asyncio.to_thread). Earlier version used
+       `asyncio.create_task(_prewarm_embedder())` which scheduled a
+       to_thread call concurrent with module-level imports — under
+       NumPy 2.x that races into 'cannot import name NDArray from
+       partially initialized module numpy._typing' (circular import
+       across threads). Running synchronously in the lifespan startup
+       eliminates the race; the asyncio loop is single-threaded at this
+       point and no requests are being served yet (Fly's grace_period
+       covers the brief load window).
+
+    2. Imports happen inside the function body (after lifespan startup
+       has begun) so `rbi-source-mcp-http --help`, --version, etc. don't
+       eat the full sentence-transformers + torch import cost.
+
+    Failures are logged and swallowed: the embedder is best-effort. If
+    the load fails, the server still serves — rbi_search and
+    rbi_check_compliance fall back to FTS5-only retrieval via the
+    existing try/except in mcp/search.py and mcp/check_compliance.py.
     """
     try:
         t0 = time.time()
-        # Local import: avoids loading sentence-transformers at module
-        # import time (which would slow `rbi-source-mcp-http --help` etc.).
         from .indexer.embed import embed_query
 
         logger.info("embedder.prewarm.start")
-        await asyncio.to_thread(embed_query, "warmup query")
+        embed_query("warmup query")
         logger.info("embedder.prewarm.done", duration_s=round(time.time() - t0, 2))
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -347,12 +359,14 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         async with session_manager.run():
             logger.info("http.lifespan.start", version=__version__)
             # Pre-warm the embedder so the first user request doesn't pay
-            # the cold-start tax (model download + load = ~75-200s on a
-            # fresh Fly machine). Runs in a thread so we don't block the
-            # event loop, and on a separate task so app startup completes
-            # before warmup finishes — the /health probe can flip green
-            # while the embedder loads in the background.
-            asyncio.create_task(_prewarm_embedder())
+            # the cold-start tax. With the bge-small model pre-baked into
+            # the Docker image (HF_HOME=/app/.cache/huggingface), this is
+            # a disk read + load — ~3-8s, not the 75-200s HF download we
+            # used to pay. Synchronous on the asyncio main thread to dodge
+            # a NumPy 2.x circular-import race that hit the previous
+            # to_thread version. Fly's health-check grace_period (30s)
+            # covers the brief block.
+            _prewarm_embedder_sync()
             yield
             logger.info("http.lifespan.stop")
 
