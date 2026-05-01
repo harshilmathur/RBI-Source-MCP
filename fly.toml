@@ -1,13 +1,21 @@
 # RBI Source MCP — Fly.io app config
-# Locked decisions from /plan-eng-review:
-#   - Single Fly machine, shared-cpu-1x with 1 GB RAM (bge-small needs ~250 MB
-#     resident; sentence-transformers + numpy + sqlite-vec push to ~600 MB).
-#     The original 256 MB plan is too small for the embedding model — bumped
-#     to 1 GB on first deploy.
-#   - auto_stop_machines = false (TTHW <2min target can't afford cold starts)
-#   - 1 GB volume at /data (corpus is ~165 MB; rest reserved for db-prev,
-#     telemetry, raw-PDF cache)
-#   - SIGHUP-based atomic swap on weekly refresh runs from GitHub Actions
+#
+# Reference deployment template. Forking? Run `fly launch --copy-config`
+# and Fly will prompt for a fresh app name; the rest of this config
+# (region, memory, volume, health check) is sane defaults for this
+# workload and can be tweaked to taste.
+#
+# Operational notes:
+#   - Single Fly machine, shared-cpu-1x with 2 GB RAM. bge-small ~250 MB +
+#     sqlite mmap'd pages + uvicorn + Python interpreter. 1 GB caused the
+#     embedder's hot pages to evict between requests, 5-20x latency hit.
+#   - auto_stop_machines = false (cold starts download bge-small from HF
+#     and load it; ~75-200s on a fresh boot, not acceptable for a public MCP).
+#   - 1 GB volume at /data (corpus is ~170 MB; the rest is reserved for
+#     db-prev, telemetry, raw-PDF cache).
+#   - Deploy strategy: rolling. Code via `fly deploy`; corpus refresh is
+#     independent (a weekly GH Action will scp /data/db.sqlite.new and
+#     SIGHUP the running process).
 
 app = "rbi-source-mcp"
 primary_region = "bom"  # Mumbai, closest to RBI source data + likely user base

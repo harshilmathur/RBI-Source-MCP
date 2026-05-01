@@ -1,0 +1,75 @@
+name: Corpus quality issue
+description: A tool returned a stale, withdrawn, mis-cited, or otherwise wrong RBI provision.
+title: "[corpus] "
+labels: ["corpus", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The corpus is the load-bearing part of this project — every report makes it tighter. The more concrete you can be, the faster a fix lands.
+
+  - type: input
+    id: tool
+    attributes:
+      label: Which tool
+      description: Which MCP tool returned the bad result?
+      placeholder: rbi_check_compliance / rbi_search / rbi_get_document / rbi_check_current
+    validations:
+      required: true
+
+  - type: textarea
+    id: input
+    attributes:
+      label: Tool input (verbatim)
+      description: The exact `arguments` object you passed in. Redact anything proprietary.
+      placeholder: |
+        {"text": "Our PA has ₹10 cr at authorisation", "topic_hint": "pa", "limit": 3}
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: response
+    attributes:
+      label: What the tool returned
+      description: Paste the full response (or just the offending result). Wrap in a code fence.
+      placeholder: |
+        ```json
+        {"document_id": "rbi:master_direction:12896", "section": "6", ...}
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What it should have returned
+      description: Cite the official RBI page or paragraph if possible. Why is the current answer wrong?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - "stale citation (provision was amended/withdrawn since corpus refresh)"
+        - "wrong section / paragraph anchor"
+        - "missing document (RBI publishes it, we don't index it)"
+        - "ranking issue (right doc but ranked too low)"
+        - "out-of-corpus query treated as in-corpus (or vice versa)"
+        - "other"
+    validations:
+      required: true
+
+  - type: input
+    id: refresh-context
+    attributes:
+      label: Was this hit on the hosted endpoint or a self-host?
+      placeholder: hosted (rbi-source.harshil.ai) / self-host (commit SHA + index date)
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Optional. Links to the official RBI page, related tickets, etc.
