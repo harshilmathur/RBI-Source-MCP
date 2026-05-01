@@ -23,7 +23,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -165,7 +165,7 @@ def run_all(url: str, base: str, skip: set[str]) -> list[Result]:
             follow_redirects=False,
         )
         assert r.status_code == 200, f"expected 200 (no redirect), got {r.status_code}"
-        return f"200 OK on /mcp (no slash, no redirect)", {"status": r.status_code}
+        return "200 OK on /mcp (no slash, no redirect)", {"status": r.status_code}
 
     def t_initialize():
         sc, rpc, text, _ = _post_mcp(
@@ -505,13 +505,13 @@ def main() -> int:
         Path(__file__).resolve().parent.parent
         / ".gstack"
         / "integration-reports"
-        / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')}.json"
+        / f"{datetime.now(UTC).strftime('%Y-%m-%d-%H%M%S')}.json"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({
         "url": args.url,
         "base": args.base,
-        "ran_at": datetime.now(timezone.utc).isoformat(),
+        "ran_at": datetime.now(UTC).isoformat(),
         "skip": sorted(skip),
         "results": [
             {
