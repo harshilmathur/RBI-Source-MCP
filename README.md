@@ -1,6 +1,7 @@
 # RBI Source MCP
 
 [![CI](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/ci.yml)
+[![Weekly refresh](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/refresh.yml/badge.svg)](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/refresh.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Live](https://img.shields.io/badge/live-rbi--source.harshil.ai-c9a85c)](https://rbi-source.harshil.ai/)
@@ -239,7 +240,11 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
 
 ## Self-host
 
-Don't want the hosted endpoint? Fork the repo and run your own copy. You have two paths for embeddings, controlled by env vars (see `src/rbi_source_mcp/embedding_config.py`):
+Don't want the hosted endpoint? Fork the repo and run your own copy.
+
+[![Deploy on Fly.io](https://fly.io/static/images/launch/deploy.svg)](https://fly.io/launch/from-github?repository=harshilmathur/RBI-Source-MCP)
+
+You have two paths for embeddings, controlled by env vars (see `src/rbi_source_mcp/embedding_config.py`):
 
 - **Cloud (default for production)**: Cloudflare Workers AI. Free tier covers a weekly 56k-chunk corpus build + thousands of queries. Runtime image stays small (~90 MB), no torch.
 - **Local**: `sentence-transformers` (bge-small-en-v1.5 @ 384-dim) running in-process. Pulls torch (~3 GB install) and downloads the model (~135 MB) on first use. No external API calls.
