@@ -1409,7 +1409,7 @@ wheels = [
 
 [[package]]
 name = "rbi-source-mcp"
-version = "0.1.0.dev0"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
