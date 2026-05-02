@@ -70,46 +70,20 @@ After connecting, four tools (`rbi_check_compliance`, `rbi_search`, `rbi_get_doc
 
 > *"Use the RBI Source MCP. What are the net-worth requirements for a payment aggregator?"*
 
-### Config snippets
+<details>
+<summary><b>Config snippets for Cline / Continue / Goose / Zed</b></summary>
 
-#### Cline (VSCode)
-
-In Cline's settings, click **MCP Servers** → **Edit MCP Settings**, then add:
-
+**Cline** (VSCode) — in MCP Settings:
 ```json
-{
-  "mcpServers": {
-    "rbi-source": {
-      "type": "streamableHttp",
-      "url": "https://rbi-source.harshil.ai/mcp/"
-    }
-  }
-}
+{ "mcpServers": { "rbi-source": { "type": "streamableHttp", "url": "https://rbi-source.harshil.ai/mcp/" } } }
 ```
 
-#### Continue.dev
-
-In `~/.continue/config.json`:
-
+**Continue.dev** — in `~/.continue/config.json`:
 ```json
-{
-  "experimental": {
-    "modelContextProtocolServers": [
-      {
-        "transport": {
-          "type": "streamable-http",
-          "url": "https://rbi-source.harshil.ai/mcp/"
-        }
-      }
-    ]
-  }
-}
+{ "experimental": { "modelContextProtocolServers": [ { "transport": { "type": "streamable-http", "url": "https://rbi-source.harshil.ai/mcp/" } } ] } }
 ```
 
-#### Goose
-
-In `~/.config/goose/config.yaml`:
-
+**Goose** — in `~/.config/goose/config.yaml`:
 ```yaml
 extensions:
   rbi-source:
@@ -118,23 +92,12 @@ extensions:
     enabled: true
 ```
 
-#### Zed
-
-In `~/.config/zed/settings.json`:
-
+**Zed** — in `~/.config/zed/settings.json`:
 ```json
-{
-  "context_servers": {
-    "rbi-source": {
-      "command": null,
-      "settings": {
-        "url": "https://rbi-source.harshil.ai/mcp/",
-        "type": "http"
-      }
-    }
-  }
-}
+{ "context_servers": { "rbi-source": { "command": null, "settings": { "url": "https://rbi-source.harshil.ai/mcp/", "type": "http" } } } }
 ```
+
+</details>
 
 ### Verify the connection
 
@@ -164,16 +127,7 @@ Paste free text (a clause, PRD section, draft policy paragraph, code comment); g
 
 **Retrieval-only by design.** The MCP returns the cited material; the LLM consuming it produces any summary or conclusion; the user verifies with a qualified human compliance reviewer. The tool does not issue compliance verdicts.
 
-`topic_hint` (optional) biases retrieval toward a known topic. Supported:
-
-- `payment_aggregator` / `pa` / `pa_pg` — Payment Aggregator MD
-- `kyc_bank` / `kyc_nbfc` / `kyc` (spans both)
-- `ppi` / `prepaid` / `wallet` — Prepaid Instruments MD
-- `cards` / `credit_card` / `debit_card` / `tokenisation` — Commercial Banks Cards MD
-- `e_mandate` / `recurring` — E-mandate Framework
-- `digital_payment_security` / `afa` — Digital Payment Security Controls
-
-Unknown values are ignored (search spans full corpus). Out-of-scope inputs (recipes, sports articles, anything unrelated) return `low_confidence: true` so consuming LLMs can decline to synthesize.
+`topic_hint` (optional) biases retrieval to one MD: `pa` / `kyc` / `ppi` / `cards` / `e_mandate` / `afa` (full alias list in the tool's input schema). Unknown values are ignored — search spans the full corpus. Out-of-scope inputs (recipes, sports articles, anything unrelated) return `low_confidence: true` so consuming LLMs can decline to synthesize.
 
 ### `rbi_search(query, filters?, limit?)` — direct retrieval
 
@@ -340,34 +294,11 @@ Want it all on autopilot? Wire up the same weekly refresh GH Action this repo sh
 
 ## Roadmap
 
-**Done:**
+Shipped surface is in [CHANGELOG.md](CHANGELOG.md). What's next:
 
-- All 342 Master Directions, 290 Standalone Circulars, 98 FAQs, 54 Press Releases, 19 Master Circulars
-- 9,908 withdrawn-circular metadata records
-- Hybrid retrieval (FTS5 + sqlite-vec + RRF fusion)
-- Mandatory disclaimer on every response (5-point text, error envelopes too)
-- Compound `UNIQUE(md_id, document_family)` schema (5 families coexist safely)
-- 25-case eval gate
-- Stdio + Streamable-HTTP transports (`rbi-source-mcp`, `rbi-source-mcp-http`)
-- Hosted endpoint live at `https://rbi-source.harshil.ai/mcp/`
-- Custom domain via Cloudflare DNS, Fly Let's-Encrypt cert auto-renewing
-- OAuth 2.1 ceremonial endpoints (Claude.ai connector compatibility)
-- Per-IP rate limiting, body-size cap, non-root container, async embedder
-- HTML homepage (browsers) with Accept-header content negotiation
+**v1.0:** MCP Registry listing · Cursor one-click install deeplink · Press Releases full archive (year-by-year crawl) · low-confidence threshold tuned with a fusion-score floor
 
-**v1.0 (next):**
-
-- Weekly refresh GitHub Action (configured, not yet running on schedule)
-- MCP Registry listing
-- Cursor one-click install deeplink
-- Press Releases full archive (year-by-year crawl)
-
-**v1.1+:**
-
-- Notifications archive (thousands of docs; needs year-iterating crawler)
-- `document_versions` — preserve historical snapshots, enable `compare_versions` and `as_of` queries
-- Amendment chain extraction → unblocks `find_updates` and `trace_relationships` tools
-- OCR pipeline for scanned MDs
+**v1.1+:** Notifications archive (thousands of docs; needs a year-iterating crawler) · `document_versions` historical snapshots → enable `compare_versions` and `as_of` queries · amendment chain extraction → unblocks `find_updates` and `trace_relationships` tools · OCR pipeline for scanned MDs
 
 ## Contributing
 
