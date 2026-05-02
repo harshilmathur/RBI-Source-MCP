@@ -26,10 +26,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install package + dev deps
+      - name: Install package + dev deps + local-embeddings
+        # Production runtime ships with cloudflare provider only (no torch).
+        # CI installs local-embeddings so the test suite can exercise the
+        # local sentence-transformers path without making outbound CF calls.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,local-embeddings]"
 
       - name: Lint
         run: ruff check .

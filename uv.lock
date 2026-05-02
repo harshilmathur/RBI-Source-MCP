@@ -1417,7 +1417,6 @@ dependencies = [
     { name = "lxml" },
     { name = "mcp" },
     { name = "numpy" },
-    { name = "sentence-transformers" },
     { name = "sqlite-vec" },
     { name = "structlog" },
 ]
@@ -1430,6 +1429,9 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-httpx" },
     { name = "ruff" },
+]
+local-embeddings = [
+    { name = "sentence-transformers" },
 ]
 
 [package.metadata]
@@ -1445,11 +1447,11 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-httpx", marker = "extra == 'dev'", specifier = ">=0.30.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "sentence-transformers", specifier = ">=3.0.0" },
+    { name = "sentence-transformers", marker = "extra == 'local-embeddings'", specifier = ">=3.0.0" },
     { name = "sqlite-vec", specifier = ">=0.1.0" },
     { name = "structlog", specifier = ">=24.0.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["local-embeddings", "dev"]
 
 [[package]]
 name = "referencing"
