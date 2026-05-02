@@ -445,6 +445,18 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
             else:
                 payload.update({"status": "ok", "documents": int(doc_count)})
 
+        # Surface the query-embedding cache stats so external monitors
+        # can verify cache effectiveness. Cheap to compute (just a tuple
+        # read on functools.lru_cache); not gated on db health since the
+        # cache is process-local.
+        try:
+            from .indexer.embed import embed_query_cache_info
+
+            payload["query_cache"] = embed_query_cache_info()
+        except Exception:  # noqa: BLE001
+            # Don't let observability break the readiness probe.
+            pass
+
         _health_cache["data"] = payload
         _health_cache["status_code"] = status_code
         _health_cache["ts"] = now
