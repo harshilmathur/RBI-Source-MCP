@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import time
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 import structlog
@@ -154,6 +155,30 @@ def embed_texts(texts: list[str], *, batch_size: int = 32) -> np.ndarray:
     return _local_embed(texts, batch_size=batch_size)
 
 
+# Process-local LRU cache for query embeddings. BGE is deterministic at
+# fp32 — same input → exact same 768-dim vector — so caching is safe and
+# correct, no staleness concern. Saves a CF round-trip (~250 ms each)
+# when the same query repeats: watchdog probes, popular user questions,
+# load tests. 10,000 entries × ~3 KB = ~30 MB max, fits trivially in our
+# 1 GB Fly machine.
+_QUERY_CACHE_MAXSIZE = 10_000
+_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
+
+
+@lru_cache(maxsize=_QUERY_CACHE_MAXSIZE)
+def _cached_query_embed(text: str) -> np.ndarray:
+    """Cache layer behind embed_query. Keyed on raw user text (the BGE
+    instruction prefix is a constant, applied uniformly downstream)."""
+    arr = embed_texts([_QUERY_INSTRUCTION + text])
+    v = arr[0]
+    # Mark the cached array read-only so a downstream `.astype()` /
+    # `.reshape()` that returns a view doesn't accidentally let a caller
+    # mutate the cached vector. Numpy will raise on direct in-place
+    # writes; copy()/astype() with copy=True still produce mutable arrays.
+    v.setflags(write=False)
+    return v
+
+
 def embed_query(text: str) -> np.ndarray:
     """Embed a single query. Returns shape (DIM,) float32, L2-normalized.
 
@@ -162,14 +187,36 @@ def embed_query(text: str) -> np.ndarray:
     cloudflare path applies the prefix here too — CF's @cf/baai/bge-* models
     are the same checkpoints HuggingFace serves, so the same instruction
     convention applies.
+
+    Process-local LRU cache: identical text returns the same cached vector
+    without re-embedding. The returned array is read-only; callers that
+    need a mutable buffer should `.copy()`. `to_sqlite_vec_bytes()` and
+    sqlite-vec MATCH both work fine on read-only arrays — they re-cast.
     """
     if not text or not text.strip():
         import numpy as np
 
         return np.zeros((EMBEDDING_DIM,), dtype="float32")
-    instruction = "Represent this sentence for searching relevant passages: "
-    arr = embed_texts([instruction + text])
-    return arr[0]
+    return _cached_query_embed(text)
+
+
+def embed_query_cache_info() -> dict[str, int]:
+    """Cache stats for observability (e.g. surfacing on /health). Returns
+    a plain dict so the caller doesn't need to import functools.CacheInfo."""
+    info = _cached_query_embed.cache_info()
+    return {
+        "hits": info.hits,
+        "misses": info.misses,
+        "currsize": info.currsize,
+        "maxsize": info.maxsize,
+    }
+
+
+def embed_query_cache_clear() -> None:
+    """Drop the query-embedding cache. Useful for tests and after a
+    runtime model swap (which we don't currently support, but it's cheap
+    insurance)."""
+    _cached_query_embed.cache_clear()
 
 
 def to_sqlite_vec_bytes(vector: np.ndarray) -> bytes:
