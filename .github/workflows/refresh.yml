@@ -1,15 +1,18 @@
 name: Weekly corpus refresh
 
-# Locked from /plan-eng-review:
-#   - Sundays 02:00 UTC (RBI publishes weekly at most)
-#   - Hash-gated: unchanged PDFs skip re-extraction
-#   - Smoke test runs on the CI runner BEFORE anything lands on Fly
-#   - On smoke fail: abort, alert, live db.sqlite untouched
-#   - On smoke pass: scp to Fly + atomic-rename + SIGHUP server (~5s blip)
+# Pipeline:
+#   1. Crawl RBI list pages (MDs + withdrawn) into a fresh db.sqlite.new
+#   2. Run all five indexers — pulls PDFs, extracts text, chunks, and
+#      embeds via Cloudflare Workers AI (bge-base @ 768-dim).
+#   3. Run rbi-source-eval as a smoke gate (>= 80% pass required).
+#   4. On smoke pass: scp the new db onto the Fly volume + atomic-rename.
+#      The running server keeps its existing fd on the old (now-unlinked)
+#      inode until the next connection cycle — no downtime.
+#   5. On smoke fail: abort, upload artifact for inspection, live db
+#      stays untouched.
 #
-# v0.1 scope: only the crawl + commit step is implemented. The PDF extractor,
-# SQLite indexer, smoke test, and Fly deploy steps are stubbed and ship at v1.0
-# alongside the rbi.search and rbi.get_document tools.
+# Cost: ~$0 (CF Workers AI free tier covers 56k chunks @ ~3k neurons total
+# weekly; well under 10k/day cap). GHA runner covered by repo's free minutes.
 
 on:
   schedule:
@@ -18,7 +21,7 @@ on:
   workflow_dispatch: {}  # Allow manual runs from the Actions tab.
 
 permissions:
-  contents: write  # to commit artifacts back to the repo if/when we choose to
+  contents: read
   actions: read
 
 concurrency:
@@ -26,9 +29,21 @@ concurrency:
   cancel-in-progress: false  # Don't kill an in-flight refresh; queue the next.
 
 jobs:
-  crawl:
+  refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 90  # full rebuild: ~30-60 min; headroom for slow RBI fetches
+
+    env:
+      # CF embedding provider — same defaults baked into the runtime image.
+      RBI_EMBEDDING_PROVIDER: cloudflare
+      RBI_EMBEDDING_MODEL: "@cf/baai/bge-base-en-v1.5"
+      RBI_EMBEDDING_DIM: "768"
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      # Both crawler (RBI_SOURCE_DB_NEW) and indexers (RBI_SOURCE_DB) write
+      # to the same staging file. Only after smoke-pass does it ship to Fly.
+      RBI_SOURCE_DB_NEW: ${{ github.workspace }}/data/db.sqlite.new
+      RBI_SOURCE_DB: ${{ github.workspace }}/data/db.sqlite.new
 
     steps:
       - name: Check out repo
@@ -40,18 +55,20 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Install poppler-utils (pdftotext)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils sqlite3
+
       - name: Install package
+        # No `local-embeddings` extra — refresh embeds via CF over HTTPS,
+        # not torch. Smaller install, faster cold runner. Unit tests are
+        # already gated in ci.yml; rerunning them here is redundant.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Run unit tests (regression + parser)
-        # Mandatory gate: parser tests must pass before we touch RBI.
-        run: pytest -q
+          pip install -e .
 
       - name: Crawl RBI list pages
-        env:
-          RBI_SOURCE_DB_NEW: ${{ github.workspace }}/data/db.sqlite.new
         run: |
           mkdir -p data
           rbi-source-crawl
@@ -59,40 +76,70 @@ jobs:
       - name: Show crawl audit
         run: |
           echo "--- crawl_runs ---"
-          sqlite3 data/db.sqlite.new \
+          sqlite3 "$RBI_SOURCE_DB_NEW" \
             "SELECT source, status_code, items_seen, items_added, items_changed, error FROM crawl_runs ORDER BY id DESC LIMIT 5;" \
             || true
 
-      - name: Verify corpus is non-empty (smoke gate)
+      - name: Verify list-page crawl is non-empty (early gate)
         run: |
-          MD_COUNT=$(sqlite3 data/db.sqlite.new "SELECT count(*) FROM documents;")
-          WD_COUNT=$(sqlite3 data/db.sqlite.new "SELECT count(*) FROM withdrawn;")
+          MD_COUNT=$(sqlite3 "$RBI_SOURCE_DB_NEW" "SELECT count(*) FROM documents;")
+          WD_COUNT=$(sqlite3 "$RBI_SOURCE_DB_NEW" "SELECT count(*) FROM withdrawn;")
           echo "Master Directions: $MD_COUNT"
           echo "Withdrawn circulars: $WD_COUNT"
           if [ "$MD_COUNT" -lt 30 ]; then
-            echo "::error::Suspicious: only $MD_COUNT MDs crawled (expected ~80). Aborting before deploy."
+            echo "::error::Suspicious: only $MD_COUNT MDs crawled (expected ~80). Aborting before indexing."
             exit 1
           fi
           if [ "$WD_COUNT" -lt 5 ]; then
-            echo "::error::Suspicious: only $WD_COUNT withdrawn circulars crawled. Aborting before deploy."
+            echo "::error::Suspicious: only $WD_COUNT withdrawn circulars crawled. Aborting before indexing."
             exit 1
           fi
 
+      - name: Index Master Directions (PDF → chunks → CF embed)
+        run: rbi-source-index-all
+
+      - name: Index Circulars
+        run: rbi-source-index-all-circulars
+
+      - name: Index Press Releases
+        run: rbi-source-index-press-release --bulk
+
+      - name: Index FAQs
+        run: rbi-source-index-faq --bulk
+
+      - name: Index Master Circulars
+        run: rbi-source-index-master-circular --bulk
+
+      - name: Smoke gate (rbi-source-eval, threshold 80%)
+        # If this fails, the new corpus never lands on Fly.
+        run: rbi-source-eval --threshold 0.80
+
       - name: Upload corpus artifact
-        # Allows manual inspection from the Actions UI without committing the SQLite to git.
+        # Manual inspection from the Actions UI without committing the SQLite to git.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rbi-corpus-${{ github.run_id }}
           path: data/db.sqlite.new
           retention-days: 30
 
-      # v1.0 steps (stubbed, not yet implemented):
-      #
-      # - name: Run smoke test (golden 20-query set + 3 regression tests)
-      #   run: pytest tests/smoke/ -q
-      #
-      # - name: Atomic-swap onto Fly
-      #   env:
-      #     FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      #   run: |
-      #     scripts/deploy_corpus.sh data/db.sqlite.new
+      - name: Install flyctl
+        # Needed to ship the corpus + atomic-rename. App-scoped FLY_API_TOKEN
+        # comes from `fly tokens create deploy -a rbi-source-mcp` (run locally
+        # once and stored in GHA secrets).
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Atomic-swap corpus onto Fly volume
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Push the new corpus into a staging path on the Fly volume.
+          flyctl ssh sftp shell -a rbi-source-mcp <<EOF
+          put data/db.sqlite.new /data/db.sqlite.new
+          EOF
+          # Atomic rename: server keeps its open fd on the old inode (so the
+          # in-flight requests don't break), new connections see the fresh db.
+          flyctl ssh console -a rbi-source-mcp -C "sh -c 'mv /data/db.sqlite /data/db-prev.sqlite && mv /data/db.sqlite.new /data/db.sqlite'"
+          # Verify by hitting /health and the doc-count endpoint if present.
+          flyctl ssh console -a rbi-source-mcp -C "sqlite3 /data/db.sqlite 'SELECT COUNT(*) FROM chunks;'"

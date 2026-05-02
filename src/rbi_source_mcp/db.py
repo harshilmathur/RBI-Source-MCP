@@ -196,10 +196,16 @@ CREATE TABLE IF NOT EXISTS pdf_artifacts (
 
 # v0.5: chunks_vec virtual table for dense embeddings. We create it
 # separately because virtual-table DDL requires the extension to be loaded.
-CHUNKS_VEC_SCHEMA_SQL = (
-    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec "
-    "USING vec0(embedding float[384]);"
-)
+# Dimension is driven by embedding_config.DIM so an A/B run with a different
+# embedding model (bge-base@768, bge-m3@1024, etc.) doesn't need a code
+# change here. Default stays 384 for the legacy bge-small-en-v1.5 path.
+def _chunks_vec_schema_sql() -> str:
+    from . import embedding_config as _cfg
+
+    return (
+        "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec "
+        f"USING vec0(embedding float[{_cfg.DIM}]);"
+    )
 
 
 @contextmanager
@@ -224,7 +230,7 @@ def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
         # idempotent and silent on failure (logs a warning).
         if _load_sqlite_vec(conn):
             try:
-                conn.execute(CHUNKS_VEC_SCHEMA_SQL)
+                conn.execute(_chunks_vec_schema_sql())
             except sqlite3.OperationalError as exc:
                 logger.warning("chunks_vec.create_fail", error=str(exc))
         try:
