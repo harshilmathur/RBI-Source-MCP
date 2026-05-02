@@ -23,16 +23,16 @@ RBI Source MCP collapses that loop. Paste a clause into Claude/Cursor with this 
 
 | Content family | Docs | Chunks | Source page |
 |---|---|---|---|
-| **Master Directions** | 342 | 50,088 | `BS_ViewMasDirections.aspx` |
-| **Standalone Circulars** | 290 | 1,532 | `BS_ViewListofstandalonecirculars.aspx` |
-| **FAQs** | 98 | 1,828 | `FAQView.aspx` |
-| **Press Releases** | 54 | 357 | `BS_PressReleaseDisplay.aspx` |
-| **Master Circulars** | 19 | 2,848 | `BS_ViewMasterCirculardetails.aspx` |
-| **TOTAL** | **803** | **56,653** | |
+| **Master Directions** | ~340 | ~50k | `BS_ViewMasDirections.aspx` |
+| **Standalone Circulars** | ~290 | ~1.5k | `BS_ViewListofstandalonecirculars.aspx` |
+| **FAQs** | ~100 | ~1.8k | `FAQView.aspx` |
+| **Press Releases** | ~55 | ~360 | `BS_PressReleaseDisplay.aspx` |
+| **Master Circulars** | ~20 | ~2.8k | `BS_ViewMasterCirculardetails.aspx` |
+| **TOTAL** | **~810 docs** | **~57k chunks** | |
 
-Plus **9,908 withdrawn-circular records** indexed for `rbi_check_current` lookup (metadata only, no full-text indexing).
+Plus **~10k withdrawn-circular records** indexed for `rbi_check_current` lookup (metadata only, no full-text indexing). Live counts grow each Sunday — see `GET /health` on the running server for the current numbers.
 
-Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-small-en-v1.5` 384-dim dense) fused via Reciprocal Rank Fusion (k=60). Every response carries a mandatory legal disclaimer. Eval gate: 25 hand-labeled compliance cases, must pass at ≥80%; currently 100%.
+Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-base-en-v1.5` 768-dim dense, embedded via Cloudflare Workers AI on the hosted endpoint) fused via Reciprocal Rank Fusion (k=60). Every response carries a mandatory legal disclaimer. Eval gate: ~25 hand-labeled compliance cases, must pass at ≥80%; currently 100%.
 
 ## Quick start
 
@@ -208,48 +208,67 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
 ```
    Fly machine (rbi-source-mcp, bom region, always-on)
    ────────────────────────────────────────────────────
-   shared-cpu-1x, 2 GB RAM, 1 GB volume, single rolling-restart
+   shared-cpu-1x, 1 GB RAM, 1 GB volume, single rolling-restart
    /data/db.sqlite       FTS5 + sqlite-vec, atomic-swap on refresh
-   /data/db-prev.sqlite  one-command rollback target [planned]
+   /data/db-prev.sqlite  one-command rollback target
    custom domain         rbi-source.harshil.ai (Cloudflare DNS)
+
+   Image: 89 MB (no torch, no resident model). Cold-boot embedder
+   prewarm: ~1s. Query embedding via Cloudflare Workers AI over HTTPS
+   (~250ms/call), with a 10K-entry process-local LRU cache so repeat
+   queries skip the round-trip entirely.
 
    Public surface
    ──────────────
    GET  /             homepage HTML (browsers) / corpus banner JSON (clients)
-   GET  /health       deep liveness probe (counts docs, re-checks sqlite-vec)
+   GET  /health       deep liveness probe (counts docs, re-checks
+                      sqlite-vec, surfaces query_cache hit/miss stats)
    POST /mcp/         MCP streamable-HTTP transport
    *    OAuth 2.1     RFC 8414, 9728, 7591 ceremonial endpoints
 
-   Weekly GitHub Action (Sundays 02:00 UTC)              [planned]
-   ───────────────────────────────────────────────────────────────
+   Weekly GitHub Action (Sundays 02:00 UTC)
+   ─────────────────────────────────────────
    crawl 5 families → hash-gate → re-extract changed PDFs
-   → embed via bge-small-en-v1.5
+   → embed via Cloudflare Workers AI (`@cf/baai/bge-base-en-v1.5`, 768-dim)
    → build new SQLite (FTS5 + chunks_vec virtual table)
-   → smoke test (golden 25-query eval, must hit ≥80%)
-   → if PASS: scp to Fly → atomic rename → SIGHUP server (~5s blip)
-   → if FAIL: abort, alert, live DB untouched
+   → smoke test (rbi-source-eval, must hit ≥80%)
+   → if PASS: sftp to Fly volume → size-verify → atomic rename
+              (server keeps old fd open; new connections see fresh DB)
+   → if FAIL: abort, upload artifact for inspection, live DB untouched
 ```
 
 ## Self-host
 
-Don't want the hosted endpoint? Fork the repo and run your own copy.
+Don't want the hosted endpoint? Fork the repo and run your own copy. You have two paths for embeddings, controlled by env vars (see `src/rbi_source_mcp/embedding_config.py`):
+
+- **Cloud (default for production)**: Cloudflare Workers AI. Free tier covers a weekly 56k-chunk corpus build + thousands of queries. Runtime image stays small (~90 MB), no torch.
+- **Local**: `sentence-transformers` (bge-small-en-v1.5 @ 384-dim) running in-process. Pulls torch (~3 GB install) and downloads the model (~135 MB) on first use. No external API calls.
 
 ```bash
 git clone https://github.com/harshilmathur/RBI-Source-MCP.git
 cd RBI-Source-MCP
 
-# Install (uv is the project's package manager: https://docs.astral.sh/uv/)
-uv sync
+# === Option A — local embeddings (no API keys needed) ===
+uv sync --extra local-embeddings
+
+# === Option B — Cloudflare Workers AI ===
+uv sync                                              # core deps only
+export RBI_EMBEDDING_PROVIDER=cloudflare
+export RBI_EMBEDDING_MODEL=@cf/baai/bge-base-en-v1.5
+export RBI_EMBEDDING_DIM=768
+export CF_ACCOUNT_ID=...                             # https://dash.cloudflare.com → Account ID
+export CF_API_TOKEN=...                              # https://dash.cloudflare.com/profile/api-tokens → "Workers AI: Read"
+# (or write {"account_id":..., "api_token":...} to ~/.gstack/cloudflare.json)
 
 # Crawl + index — populates the local corpus.
-# ~1-2 hours on first run; downloads bge-small-en-v1.5 (~135 MB) on the
-# first index command, cached locally afterwards.
+# Local path: ~1-2 hours on first run (CPU-bound).
+# CF path:    ~30-45 min for crawl + extract; embedding is API-fast (~110 chunks/sec).
 uv run rbi-source-crawl                            # documents + withdrawn metadata
-uv run rbi-source-index-all                        # 342 Master Directions
-uv run rbi-source-index-all-circulars              # 290 Standalone Circulars
-uv run rbi-source-index-press-release --bulk       # 54 Press Releases
-uv run rbi-source-index-faq --bulk                 # 98 FAQs
-uv run rbi-source-index-master-circular --bulk     # 19 Master Circulars
+uv run rbi-source-index-all                        # Master Directions
+uv run rbi-source-index-all-circulars              # Standalone Circulars
+uv run rbi-source-index-press-release --bulk      # Press Releases
+uv run rbi-source-index-faq --bulk                # FAQs
+uv run rbi-source-index-master-circular --bulk    # Master Circulars
 
 # Verify the eval gate before serving
 uv run rbi-source-eval                             # must pass at ≥80%

@@ -37,9 +37,17 @@ src/rbi_source_mcp/
   │   ├─ pdf_fetch.py                     PDF download with WAF bypass headers
   │   └─ refresh.py                       Weekly orchestrator for MD list + withdrawn list
   ├─ extractor/pdf.py        pdftotext wrapper, RBI-ref + issue-date parsers
+  ├─ embedding_config.py     Provider/model/dim driven by env (RBI_EMBEDDING_*).
+  │                          Defaults: local provider + bge-small@384 (back-compat).
+  │                          Production sets cloudflare + bge-base@768.
   ├─ indexer/
   │   ├─ chunk.py            Outline-aware paragraph chunker
-  │   ├─ embed.py            bge-small-en-v1.5 (lazy-loaded singleton)
+  │   ├─ embed.py            Provider-dispatching embedder. Local path uses
+  │   │                      sentence-transformers (lazy singleton); cloud path
+  │   │                      POSTs to Cloudflare Workers AI (httpx + 100/batch +
+  │   │                      retry). embed_query() has a 10K-entry LRU cache
+  │   │                      keyed on raw user text — saves CF round-trips on
+  │   │                      repeat queries (watchdog, popular questions).
   │   ├─ persist.py          SHARED — upsert document + chunks + embeddings
   │   ├─ build_md_index.py + build_all.py
   │   ├─ build_circular_index.py + build_all_circulars.py
@@ -47,12 +55,19 @@ src/rbi_source_mcp/
   │   ├─ build_faq_index.py
   │   └─ build_master_circular_index.py
   └─ eval/
-      ├─ cases.py            25 hand-labeled test cases (REG-4 regression suite)
+      ├─ cases.py            ~25 hand-labeled test cases (REG-4 regression suite)
       └─ runner.py           Eval gate; passes at ≥80%
 
-tests/                       77 unit tests, all passing (incl. error-envelope, compound-key)
-data/db.sqlite              ~171 MB; 803 documents, 56,653 chunks (5 families)
+scripts/                     Ops + research tooling, not shipped in the runtime image.
+  ├─ qa_live.py              Deep QA harness (~50 probes) for the live URL
+  ├─ watchdog.py             Light watchdog (~5 probes) safe to run from cron
+  ├─ reembed_to_bge_base.py  Corpus re-embed across providers (A/B testing)
+  ├─ eval_dump.py + compare_ab.py + compare_3way.py   Embedding-model bake-off
+
+tests/                       94 unit tests passing, 3 skipped
+data/db.sqlite              ~250 MB at 768-dim; ~810 docs, ~57k chunks (drifts weekly)
 fly.toml + Dockerfile        Hosted-endpoint config; LIVE at https://rbi-source.harshil.ai/mcp/
+                             Image is 89 MB (no torch); runtime uses CF for embeddings.
 .dockerignore                Keeps build context lean; preserves db.sqlite.initial seed
 ```
 

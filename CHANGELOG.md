@@ -4,6 +4,83 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.6.1 — weekly refresh hardening + cache observability
+
+Three fixes to `.github/workflows/refresh.yml` addressing failure modes
+observed during the v0.6.0 manual migration:
+
+1. Pre-clean stale `/data/db.sqlite.new` before sftp. `flyctl sftp put`
+   refuses to overwrite, so a previous failed run would block every
+   subsequent weekly cron without manual intervention.
+2. Switch from `flyctl ssh sftp shell` heredoc to `flyctl sftp put`
+   (one-shot, proper exit codes). The shell form was observed silently
+   hanging during the migration and its exit code didn't reliably reflect
+   put-success.
+3. Verify byte-count match between local and remote before atomic-rename.
+   A 252 MB upload truncated to 94 MB once due to a wireguard hiccup;
+   without a stat check, that would have shipped a broken corpus.
+
+`/health` now surfaces `query_cache` stats (hits / misses / currsize /
+maxsize) so external monitors and the watchdog can verify cache
+effectiveness without ssh.
+
+Plus minor cleanup in `src/rbi_source_mcp/indexer/embed.py`: replace
+`__import__("pathlib").Path(...)` with proper top-level import; dedup
+the double `cloudflare_creds()` call inside `_cf_embed`.
+
+### v0.6.0 — Cloudflare Workers AI embeddings
+
+Production now embeds queries via `@cf/baai/bge-base-en-v1.5` (768-dim)
+over HTTPS instead of running sentence-transformers in-process. Eval
+gate holds at 24/24 cases. Local 3-way bake-off (small/base/m3) showed
+m3 regresses on the headline PPI loading-limit case despite being
+larger, so we ship bge-base.
+
+**Image impact:**
+- Runtime image: ~4 GB → **89 MB** (no torch, no resident model)
+- Cold-boot embedder prewarm: 75-200s → **~1.07s**
+- Source-only deploys: 12-14 min → **2-3 min**
+- Fly machine memory: 2 GB → **1 GB**
+
+**Code:**
+- New `src/rbi_source_mcp/embedding_config.py`: env-driven
+  `RBI_EMBEDDING_{PROVIDER,MODEL,DIM}` with safe defaults
+  (local/bge-small/384) so existing deployments keep working with no
+  env changes.
+- `indexer/embed.py` dispatches between local sentence-transformers
+  and Cloudflare Workers AI HTTP, with 100/batch + retry on 429/5xx
+  and defensive L2 normalization.
+- `indexer/embed.py`: 10K-entry LRU cache on `embed_query` keyed on
+  raw user text. Identical queries (watchdog, popular questions) skip
+  the CF round-trip entirely (~250ms saved).
+- `db.py`: `chunks_vec` schema is now DIM-aware (was hardcoded at
+  `float[384]`); `vec0(embedding float[N])` reads from
+  `embedding_config.DIM`.
+- `sentence-transformers` moved from main `dependencies` to
+  `[project.optional-dependencies] local-embeddings`. Production runtime
+  sync skips it; local devs opt in via `uv sync --extra local-embeddings`.
+
+**Infra:**
+- `Dockerfile`: drops the bge-small model pre-bake step + HF cache
+  copy. Bakes `RBI_EMBEDDING_*` defaults so the image is self-configured
+  once secrets land.
+- `fly.toml`: memory drops 2 GB → 1 GB; comments updated to reflect the
+  CF-based architecture.
+- `.github/workflows/refresh.yml`: full pipeline wired (was a stub) —
+  crawl + 5 indexers + eval gate + sftp + atomic-rename onto the Fly
+  volume. Uses CF creds + app-scoped `FLY_API_TOKEN` from repo secrets.
+- `.github/workflows/ci.yml`: installs `[dev,local-embeddings]` so the
+  test suite still exercises the local embedder path.
+
+**Research artifacts kept in repo:**
+- `scripts/qa_live.py` — deep QA harness (~50 probes, ~30s) for the
+  live URL.
+- `scripts/watchdog.py` — light watchdog (~5 probes, ~3s) safe for cron.
+- `scripts/reembed_to_bge_base.py` — corpus re-embed with adaptive
+  halve-on-400 batching (CF's 60K-token cap on bge-m3).
+- `scripts/eval_dump.py` + `scripts/compare_ab.py` +
+  `scripts/compare_3way.py` — the bake-off harness.
+
 ### v0.5.12 — license change Apache-2.0 → MIT
 
 Changed the project license from Apache-2.0 to MIT. MIT is the more
