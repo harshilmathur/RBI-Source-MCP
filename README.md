@@ -242,8 +242,6 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
 
 Don't want the hosted endpoint? Fork the repo and run your own copy.
 
-[![Deploy on Fly.io](https://fly.io/static/images/launch/deploy.svg)](https://fly.io/launch/from-github?repository=harshilmathur/RBI-Source-MCP)
-
 You have two paths for embeddings, controlled by env vars (see `src/rbi_source_mcp/embedding_config.py`):
 
 - **Cloud (default for production)**: Cloudflare Workers AI. Free tier covers a weekly 56k-chunk corpus build + thousands of queries. Runtime image stays small (~90 MB), no torch.
@@ -308,12 +306,37 @@ The Compose setup uses a named `rbi_data` volume; first run will be slow as the 
 `fly.toml` is committed and ready. Fork the repo, then:
 
 ```bash
-fly launch --copy-config       # prompt for a new app name; everything else is sane defaults
-fly volumes create rbi_data --region <your-region> --size 1
-# populate the volume by running the indexers in the container, or
-# scp a pre-built db.sqlite to /data/db.sqlite
+# 1. Fly app + volume in one shot. --copy-config keeps fly.toml; you'll be
+#    prompted for a unique app name and region.
+fly launch --copy-config --no-deploy
+
+# 2. Tell the runtime which embedding provider + creds to use. The image
+#    bakes RBI_EMBEDDING_* defaults pointing at Cloudflare Workers AI; you
+#    just need the CF auth.
+fly secrets set \
+  CF_ACCOUNT_ID=<your-cf-account-id> \
+  CF_API_TOKEN=<your-cf-workers-ai-read-token>     # https://dash.cloudflare.com/profile/api-tokens
+
+# 3. Build a corpus locally, then ship it to the volume. The full crawl +
+#    index takes ~30-60 min; CF embeds at ~110 chunks/sec.
+RBI_EMBEDDING_PROVIDER=cloudflare \
+RBI_EMBEDDING_MODEL=@cf/baai/bge-base-en-v1.5 \
+RBI_EMBEDDING_DIM=768 \
+  uv run rbi-source-crawl && \
+  uv run rbi-source-index-all && \
+  uv run rbi-source-index-all-circulars && \
+  uv run rbi-source-index-press-release --bulk && \
+  uv run rbi-source-index-faq --bulk && \
+  uv run rbi-source-index-master-circular --bulk
+
+fly sftp put data/db.sqlite.new /data/db.sqlite.new -a <your-app-name>
+fly ssh console -a <your-app-name> -C "mv /data/db.sqlite.new /data/db.sqlite"
+
+# 4. Ship it.
 fly deploy
 ```
+
+Want it all on autopilot? Wire up the same weekly refresh GH Action this repo ships with — `.github/workflows/refresh.yml` does the crawl + eval + atomic-rename without you touching anything. Set `FLY_API_TOKEN`, `CF_ACCOUNT_ID`, `CF_API_TOKEN` as repo secrets in your fork.
 
 ## Roadmap
 
