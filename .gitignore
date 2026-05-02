@@ -55,3 +55,4 @@ Thumbs.db
 
 # gstack local artifacts (security reports, learnings)
 .gstack/
+logs/
