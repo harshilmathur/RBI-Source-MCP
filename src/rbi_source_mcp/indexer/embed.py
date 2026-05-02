@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import time
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -80,18 +81,16 @@ _CF_BATCH_SIZE = 100  # CF accepts more, but smaller batches retry-friendly
 _CF_BASE_URL = "https://api.cloudflare.com/client/v4"
 
 
-def _cf_endpoint() -> str:
-    acct, _ = cfg.cloudflare_creds()
-    return f"{_CF_BASE_URL}/accounts/{acct}/ai/run/{MODEL_NAME}"
-
-
 def _cf_embed(texts: list[str]) -> np.ndarray:
     """POST to CF Workers AI. Returns (len(texts), DIM) float32, L2-normalized."""
     import httpx
     import numpy as np
 
-    _, token = cfg.cloudflare_creds()
-    url = _cf_endpoint()
+    # Single creds fetch — was being called twice (once via _cf_endpoint,
+    # once for the bearer token), one of which would re-read the credentials
+    # file on every CF round-trip when env vars aren't set.
+    acct, token = cfg.cloudflare_creds()
+    url = f"{_CF_BASE_URL}/accounts/{acct}/ai/run/{MODEL_NAME}"
     out: list[list[float]] = []
 
     for i in range(0, len(texts), _CF_BATCH_SIZE):
@@ -244,7 +243,5 @@ def active_backend() -> dict[str, object]:
         "model": MODEL_NAME,
         "dim": EMBEDDING_DIM,
         "cf_account_id_set": bool(os.environ.get("CF_ACCOUNT_ID"))
-        or (
-            __import__("pathlib").Path("~/.gstack/cloudflare.json").expanduser().exists()
-        ),
+        or (Path("~/.gstack/cloudflare.json").expanduser().exists()),
     }

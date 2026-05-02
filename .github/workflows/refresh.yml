@@ -129,17 +129,45 @@ jobs:
         # once and stored in GHA secrets).
         uses: superfly/flyctl-actions/setup-flyctl@master
 
-      - name: Atomic-swap corpus onto Fly volume
+      - name: Pre-clean stale staging file on Fly volume
+        # If a previous refresh failed mid-rename, /data/db.sqlite.new can
+        # be left behind. `flyctl sftp put` errors with "remote file already
+        # exists" rather than overwriting, so without this pre-clean a single
+        # broken run would block every subsequent weekly cron until manual
+        # intervention.
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl ssh console -a rbi-source-mcp -C "rm -f /data/db.sqlite.new" || true
+
+      - name: Push new corpus to Fly volume
+        # Use `flyctl sftp put` (one-shot, proper exit codes) instead of
+        # `flyctl ssh sftp shell` with heredoc — the shell form has been
+        # observed silently hanging or returning 0 on partial uploads,
+        # which would let the atomic-rename step replace the live corpus
+        # with a truncated one.
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl sftp put data/db.sqlite.new /data/db.sqlite.new -a rbi-source-mcp
+
+      - name: Verify upload + atomic-swap corpus
+        # Belt-and-suspenders: stat both ends and bail if the bytes don't
+        # match before swapping the live corpus. We watched a 252 MB upload
+        # truncate to 94 MB once due to a wireguard tunnel hiccup; without
+        # this gate, that would have replaced the live corpus with a broken
+        # one. The atomic rename pattern (mv old → db-prev, mv new → live)
+        # keeps the running server's open fd on the old inode, so in-flight
+        # requests don't break — only the next request reopens and sees the
+        # fresh corpus.
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           set -euo pipefail
-          # Push the new corpus into a staging path on the Fly volume.
-          flyctl ssh sftp shell -a rbi-source-mcp <<EOF
-          put data/db.sqlite.new /data/db.sqlite.new
-          EOF
-          # Atomic rename: server keeps its open fd on the old inode (so the
-          # in-flight requests don't break), new connections see the fresh db.
+          expected=$(stat -c%s data/db.sqlite.new)
+          actual=$(flyctl ssh console -a rbi-source-mcp -C "stat -c%s /data/db.sqlite.new" | tr -d '[:space:]')
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::corpus size mismatch (local=$expected bytes, remote=$actual bytes) — refusing to swap"
+            flyctl ssh console -a rbi-source-mcp -C "rm -f /data/db.sqlite.new" || true
+            exit 1
+          fi
           flyctl ssh console -a rbi-source-mcp -C "sh -c 'mv /data/db.sqlite /data/db-prev.sqlite && mv /data/db.sqlite.new /data/db.sqlite'"
-          # Verify by hitting /health and the doc-count endpoint if present.
           flyctl ssh console -a rbi-source-mcp -C "sqlite3 /data/db.sqlite 'SELECT COUNT(*) FROM chunks;'"
