@@ -314,6 +314,23 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Short version:
 
 See [SECURITY.md](SECURITY.md). Don't open public issues for vulnerabilities — use a [private security advisory](https://github.com/harshilmathur/RBI-Source-MCP/security/advisories/new).
 
+## Telemetry
+
+The hosted instance at `rbi-source.harshil.ai` captures anonymous server-side usage events to PostHog so I can see which tools get called, latency, and error rate. **Self-host installs never phone home** — telemetry only activates when `POSTHOG_API_KEY` is set in the environment, which it isn't in any path the OSS code ships with.
+
+What the hosted instance captures per tool call:
+
+- tool name (`rbi_search` / `rbi_check_compliance` / `rbi_get_document` / `rbi_check_current`)
+- latency (ms), status (`ok` / `error` / `input_too_large` / `db_unavailable`)
+- shape-only metadata: `limit`, `has_filters`, `include_text`, `topic_hint` enum value, length-bucket of the input (e.g. `"500-2000"`)
+- exception class name on failure, server version, Fly region
+
+What it does **not** capture: query strings, clause text, document IDs, response bodies, URLs passed to `rbi_check_current`, IP, or any client identifier. Events are anonymous (`$process_person_profile: false`) and `disable_geoip=True` is set on the SDK.
+
+The website uses Cloudflare Web Analytics (cookieless, no consent banner needed).
+
+To self-host with your own collector: `uv sync --extra hosted` and set `POSTHOG_API_KEY` + optional `POSTHOG_HOST`. Leave both unset to never phone home — the default for every install.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

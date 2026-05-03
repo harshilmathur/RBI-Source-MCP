@@ -39,15 +39,18 @@ ENV UV_COMPILE_BYTECODE=1
 # DEPS LAYER — cached unless pyproject.toml or uv.lock change.
 # `--no-dev` skips dev extras. `local-embeddings` is also an extra (not
 # in main deps), so sentence-transformers + torch are NOT installed.
+# `--extra hosted` pulls the PostHog SDK (~few hundred KB) for anonymous
+# server-side telemetry that activates only when POSTHOG_API_KEY is set.
+# Self-host installs skip this extra and never phone home.
 # Production talks to Cloudflare Workers AI over HTTPS for embeddings.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --no-dev
+RUN uv sync --frozen --no-install-project --no-dev --extra hosted
 
 # SOURCE LAYER — changes on every code edit. uv sync at this step only
 # registers the project package itself; deps are already installed.
 COPY src ./src
 COPY README.md LICENSE ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra hosted
 
 # ============================================================================
 # STAGE 2: RUNTIME — slim, no build tools

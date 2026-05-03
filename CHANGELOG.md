@@ -4,6 +4,40 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.6.2 — anonymous server-side telemetry (hosted instance only)
+
+Adds an optional PostHog integration so the hosted instance at
+`rbi-source.harshil.ai` can answer "which tools actually get used,
+how slow are they, what's the error rate." Off by default everywhere
+else.
+
+- **New module `src/rbi_source_mcp/telemetry.py`** — wraps the PostHog
+  Python SDK behind an env-var gate. Activates only when
+  `POSTHOG_API_KEY` is set; otherwise every entry point is a no-op
+  with zero allocations and no posthog import.
+- **Capture point** — single `mcp_tool_called` event fired from a
+  `try/finally` inside `server.py:call_tool`. One wrap, all four
+  tools covered. Captures only shape-level metadata (length buckets,
+  `limit`, `has_filters`, `topic_hint` enum, status, latency_ms,
+  exception class name on failure), never query text, clause text,
+  document IDs, URLs, or response bodies. Events use a stable
+  per-machine `distinct_id` (Fly machine id when available) and
+  `$process_person_profile: false` so PostHog does not build user
+  profiles. `disable_geoip=True` on the SDK.
+- **`hosted` extra** in `pyproject.toml` pulls `posthog>=3.0.0`.
+  Dockerfile passes `--extra hosted` in both `uv sync` invocations.
+  OSS install path (`uv sync` with no extras) does not pull posthog.
+- **`/health` exposes `telemetry: bool`** so a quick curl confirms
+  the wiring on the hosted instance.
+- **Lifespan flush** — `server_http.py` calls `telemetry.shutdown()`
+  on lifespan teardown so the last batch of events on a deploy
+  doesn't get dropped.
+- **README** — new `## Telemetry` section documents what is
+  captured, what is not, and how self-hosters opt in or stay off.
+
+Website (`rbi-source.harshil.ai`) telemetry is handled separately
+via Cloudflare Web Analytics (cookieless, JS injected at the proxy).
+
 ### v0.6.1 — weekly refresh hardening + cache observability
 
 Three fixes to `.github/workflows/refresh.yml` addressing failure modes
