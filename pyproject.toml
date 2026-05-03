@@ -1,6 +1,6 @@
 [project]
 name = "rbi-source-mcp"
-version = "0.6.1"
+version = "0.6.2"
 description = "An MCP server for RBI Master Directions: version-aware, citation-first, knows what's withdrawn."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -46,6 +46,13 @@ local-embeddings = [
     # bge-small-en-v1.5 via sentence-transformers. ~135 MB model download on
     # first use, cached locally. Pulls torch as a transitive dep.
     "sentence-transformers>=3.0.0",
+]
+# v0.6.2: optional anonymous server-side telemetry for the hosted Fly
+# deploy. PostHog Python SDK only — does NOT activate unless POSTHOG_API_KEY
+# is set in the env. Self-host installs skip this extra by default and
+# never phone home. The Fly Docker image installs it via --extra hosted.
+hosted = [
+    "posthog>=3.0.0",
 ]
 dev = [
     "pytest>=8.0.0",

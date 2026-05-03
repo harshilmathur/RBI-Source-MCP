@@ -65,11 +65,11 @@ def _load_index_html() -> bytes | None:
 # filenames map to files under _STATIC_DIR. Add a new entry here when
 # adding a new static asset; never construct the path from request input.
 _STATIC_ALLOWLIST: dict[str, tuple[str, str]] = {
-    "/favicon.ico":          ("favicon.ico",          "image/x-icon"),
-    "/favicon.svg":          ("favicon.svg",          "image/svg+xml"),
-    "/favicon-16.png":       ("favicon-16.png",       "image/png"),
-    "/favicon-32.png":       ("favicon-32.png",       "image/png"),
-    "/favicon-512.png":      ("favicon-512.png",      "image/png"),
+    "/favicon.ico": ("favicon.ico", "image/x-icon"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+    "/favicon-16.png": ("favicon-16.png", "image/png"),
+    "/favicon-32.png": ("favicon-32.png", "image/png"),
+    "/favicon-512.png": ("favicon-512.png", "image/png"),
     "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
 }
 
@@ -130,6 +130,7 @@ def _wants_html(request: Request) -> bool:
     """
     accept = (request.headers.get("accept") or "").lower()
     return "text/html" in accept and "application/json" not in accept
+
 
 logger = structlog.get_logger(__name__)
 
@@ -299,9 +300,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Periodic prune (every ~window) to bound memory under churn.
         if now - self._last_prune > self.window_s:
             cutoff = now - self.window_s
-            self._buckets = {
-                k: v for k, v in self._buckets.items() if v[0] > cutoff
-            }
+            self._buckets = {k: v for k, v in self._buckets.items() if v[0] > cutoff}
             self._last_prune = now
 
         window_start, count = self._buckets.get(ip, (now, 0))
@@ -349,7 +348,7 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
     server = _build_server()
     session_manager = StreamableHTTPSessionManager(
         app=server,
-        event_store=None,           # stateless mode doesn't need replay
+        event_store=None,  # stateless mode doesn't need replay
         json_response=json_response,
         stateless=stateless,
     )
@@ -368,6 +367,15 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
             # covers the brief block.
             _prewarm_embedder_sync()
             yield
+            # Flush queued PostHog events before shutdown so the last
+            # batch on a deploy doesn't get dropped. No-op when telemetry
+            # is disabled (every self-host install).
+            try:
+                from . import telemetry
+
+                telemetry.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
             logger.info("http.lifespan.stop")
 
     async def handle_mcp(scope, receive, send) -> None:  # noqa: ANN001 — ASGI signature
@@ -455,6 +463,16 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
             payload["query_cache"] = embed_query_cache_info()
         except Exception:  # noqa: BLE001
             # Don't let observability break the readiness probe.
+            pass
+
+        # Surface telemetry on/off so a quick curl of /health confirms
+        # PostHog wiring on the hosted instance. Returns False on every
+        # self-host install (POSTHOG_API_KEY unset).
+        try:
+            from . import telemetry
+
+            payload["telemetry"] = telemetry.is_enabled()
+        except Exception:  # noqa: BLE001
             pass
 
         _health_cache["data"] = payload
@@ -606,10 +624,7 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
             Route("/health", health),
             # Favicon set — declared in index.html via <link>. Each is a
             # whitelisted entry in _STATIC_ALLOWLIST.
-            *[
-                Route(p, static_asset, methods=["GET"])
-                for p in _STATIC_ALLOWLIST
-            ],
+            *[Route(p, static_asset, methods=["GET"]) for p in _STATIC_ALLOWLIST],
             # OAuth 2.1 ceremonial endpoints. Claude.ai's connector flow
             # walks RFC 8414 + RFC 9728 + RFC 7591 BEFORE attempting the
             # MCP handshake; if these 404, the connector says "Couldn't
@@ -670,9 +685,7 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Serve RBI Source MCP over streamable HTTP."
-    )
+    parser = argparse.ArgumentParser(description="Serve RBI Source MCP over streamable HTTP.")
     parser.add_argument(
         "--host",
         default=os.environ.get("RBI_SOURCE_HOST", "127.0.0.1"),

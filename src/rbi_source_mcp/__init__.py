@@ -7,4 +7,4 @@ not affiliated with, endorsed by, or sponsored by the Reserve Bank of India.
 RBI(R) is a trademark of the Reserve Bank of India.
 """
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"

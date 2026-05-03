@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from . import __version__
+from . import __version__, telemetry
 from .check_current import check_current
 from .db import connect, init_db
 from .disclaimer import DISCLAIMER, LLM_INSTRUCTION
@@ -152,9 +153,7 @@ def _run_check_compliance(
         return check_compliance(conn, text, topic_hint=topic_hint, limit=limit)
 
 
-def _run_search(
-    db_path: Path, query: str, filters: dict[str, Any], limit: int
-) -> dict[str, Any]:
+def _run_search(db_path: Path, query: str, filters: dict[str, Any], limit: int) -> dict[str, Any]:
     with connect(db_path) as conn:
         return search(conn, query, filters=filters, limit=limit)
 
@@ -322,91 +321,142 @@ def _build_server() -> Server:
         # without our disclaimer fields. The legal-posture contract is that
         # EVERY tool response carries `_disclaimer` + `_llm_instruction`,
         # including failures. Don't let an exception break that.
-        db_path = _resolve_db_path()
+        #
+        # Telemetry: a single `mcp_tool_called` event fires from the finally
+        # block at the bottom of this function. Status + extra_props are
+        # mutated by each branch before returning. When POSTHOG_API_KEY is
+        # unset (every self-host install), capture_tool_call is a no-op.
+        # We deliberately capture only shape-level metadata (limit, has_filters,
+        # length buckets, topic_hint enum value) — never the query text,
+        # clause text, document ids, or response bodies.
+        t0 = time.perf_counter()
+        status = "ok"
+        extra_props: dict[str, Any] = {}
         try:
-            init_db(db_path)
-        except Exception as exc:  # noqa: BLE001
-            return [_error_response(name, "db_unavailable", exc)]
-        args = arguments or {}
-
-        # Each tool branch wraps its synchronous DB + embedder work in
-        # asyncio.to_thread so the event loop is NOT blocked while
-        # sentence-transformers runs model.encode() (CPU-bound, ~50-200ms
-        # per call on shared-cpu-1x). Without this wrap, a single client
-        # at modest concurrency could brown out the entire server. See
-        # /cso security review finding #1 (2026-04-29).
-
-        if name == "rbi_check_compliance":
-            text = args.get("text", "") or ""
-            if len(text) > MAX_INPUT_LEN:
-                return [_input_too_large_response(name, "text", len(text))]
+            db_path = _resolve_db_path()
             try:
-                result = await asyncio.to_thread(
-                    _run_check_compliance,
-                    db_path,
-                    text,
-                    args.get("topic_hint"),
-                    int(args.get("limit", 5)),
-                )
+                init_db(db_path)
             except Exception as exc:  # noqa: BLE001
-                return [_error_response(name, "tool_failed", exc)]
-            return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
+                status = "db_unavailable"
+                extra_props["error_type"] = type(exc).__name__
+                return [_error_response(name, "db_unavailable", exc)]
+            args = arguments or {}
 
-        if name == "rbi_search":
-            query = args.get("query", "") or ""
-            if len(query) > MAX_INPUT_LEN:
-                return [_input_too_large_response(name, "query", len(query))]
-            try:
-                result = await asyncio.to_thread(
-                    _run_search,
-                    db_path,
-                    query,
-                    args.get("filters") or {},
-                    int(args.get("limit", 5)),
-                )
-            except Exception as exc:  # noqa: BLE001
-                return [_error_response(name, "tool_failed", exc)]
-            return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
+            # Each tool branch wraps its synchronous DB + embedder work in
+            # asyncio.to_thread so the event loop is NOT blocked while
+            # sentence-transformers runs model.encode() (CPU-bound, ~50-200ms
+            # per call on shared-cpu-1x). Without this wrap, a single client
+            # at modest concurrency could brown out the entire server. See
+            # /cso security review finding #1 (2026-04-29).
 
-        if name == "rbi_get_document":
-            try:
-                result = await asyncio.to_thread(
-                    _run_get_document,
-                    db_path,
-                    args.get("document_id", ""),
-                    bool(args.get("include_text", False)),
-                    args.get("as_of"),
-                )
-            except Exception as exc:  # noqa: BLE001
-                return [_error_response(name, "tool_failed", exc)]
-            return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
+            if name == "rbi_check_compliance":
+                text = args.get("text", "") or ""
+                topic_hint = args.get("topic_hint")
+                limit = int(args.get("limit", 5))
+                extra_props["text_length_bucket"] = telemetry.text_length_bucket(len(text))
+                extra_props["limit"] = limit
+                if topic_hint:
+                    # topic_hint is a closed enum (kyc/uli/digital_lending/...) —
+                    # safe to send. Cardinality stays bounded.
+                    extra_props["topic_hint"] = str(topic_hint)
+                if len(text) > MAX_INPUT_LEN:
+                    status = "input_too_large"
+                    return [_input_too_large_response(name, "text", len(text))]
+                try:
+                    result = await asyncio.to_thread(
+                        _run_check_compliance,
+                        db_path,
+                        text,
+                        topic_hint,
+                        limit,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    status = "error"
+                    extra_props["error_type"] = type(exc).__name__
+                    return [_error_response(name, "tool_failed", exc)]
+                return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
-        if name == "rbi_check_current":
-            try:
-                result = await asyncio.to_thread(
-                    _run_check_current,
-                    db_path,
-                    args.get("url_or_ref", ""),
-                )
-            except Exception as exc:  # noqa: BLE001
-                return [_error_response(name, "tool_failed", exc)]
-            return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
+            if name == "rbi_search":
+                query = args.get("query", "") or ""
+                filters = args.get("filters") or {}
+                limit = int(args.get("limit", 5))
+                extra_props["query_length_bucket"] = telemetry.query_length_bucket(len(query))
+                extra_props["has_filters"] = bool(filters)
+                extra_props["limit"] = limit
+                if len(query) > MAX_INPUT_LEN:
+                    status = "input_too_large"
+                    return [_input_too_large_response(name, "query", len(query))]
+                try:
+                    result = await asyncio.to_thread(
+                        _run_search,
+                        db_path,
+                        query,
+                        filters,
+                        limit,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    status = "error"
+                    extra_props["error_type"] = type(exc).__name__
+                    return [_error_response(name, "tool_failed", exc)]
+                return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps(
-                    _wrap_response(
-                        {
-                            "status": "error",
-                            "reason": "unknown_tool",
-                            "tool": name,
-                        }
+            if name == "rbi_get_document":
+                include_text = bool(args.get("include_text", False))
+                extra_props["include_text"] = include_text
+                extra_props["has_as_of"] = bool(args.get("as_of"))
+                try:
+                    result = await asyncio.to_thread(
+                        _run_get_document,
+                        db_path,
+                        args.get("document_id", ""),
+                        include_text,
+                        args.get("as_of"),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    status = "error"
+                    extra_props["error_type"] = type(exc).__name__
+                    return [_error_response(name, "tool_failed", exc)]
+                return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
+
+            if name == "rbi_check_current":
+                # Deliberately no extra_props — url_or_ref can carry user-leakable
+                # context (e.g., a private ref id). Just count the call.
+                try:
+                    result = await asyncio.to_thread(
+                        _run_check_current,
+                        db_path,
+                        args.get("url_or_ref", ""),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    status = "error"
+                    extra_props["error_type"] = type(exc).__name__
+                    return [_error_response(name, "tool_failed", exc)]
+                return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
+
+            status = "unknown_tool"
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        _wrap_response(
+                            {
+                                "status": "error",
+                                "reason": "unknown_tool",
+                                "tool": name,
+                            }
+                        ),
+                        indent=2,
                     ),
-                    indent=2,
-                ),
+                )
+            ]
+        finally:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            telemetry.capture_tool_call(
+                tool_name=name,
+                status=status,
+                latency_ms=latency_ms,
+                properties=extra_props,
             )
-        ]
 
     return server
 
