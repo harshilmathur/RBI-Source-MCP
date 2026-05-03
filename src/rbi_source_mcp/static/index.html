@@ -129,6 +129,7 @@
     letter-spacing: 0.01em;
     color: var(--ink-strong);
     text-decoration: none;
+    white-space: nowrap;  /* Prevent "RBI Source / MCP." wrap on narrow viewports */
   }
   .top-name .dot { color: var(--accent); }
   .top-links { display: flex; gap: 22px; align-items: center; font-size: 14px; }
@@ -607,6 +608,26 @@
     .flow { grid-template-columns: 1fr; }
     .flow-step { border-right: 0; border-bottom: 1px solid var(--rule-faint); }
     .flow-step:last-child { border-bottom: 1px solid var(--rule); }
+  }
+
+  /* Top nav at phone widths: tighten gaps, drop the LIVE badge frame to
+     just the green dot. The brand was wrapping to two lines because the
+     pill + 4 nav links squeezed it. white-space: nowrap on .top-name
+     handles the wrap; this block reclaims the horizontal room. */
+  @media (max-width: 640px) {
+    .top { padding: 12px 0; }
+    .top-inner { padding: 0 16px; gap: 10px; }
+    .top-links { gap: 16px; font-size: 13px; }
+    .top-pill {
+      border: 0;
+      padding: 0;
+      font-size: 0;          /* hides the "Live" text */
+      letter-spacing: 0;
+    }
+    .top-pill .live {
+      width: 8px; height: 8px;
+      margin: 0;             /* dot only, no badge frame */
+    }
   }
 
   /* ---------- Reduced motion ---------- */
