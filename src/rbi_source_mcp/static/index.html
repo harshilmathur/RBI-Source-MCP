@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RBI Source MCP — RBI corpus, citation-first, in your AI workflow</title>
-<meta name="description" content="A hosted MCP (Model Context Protocol) server that returns Reserve Bank of India regulatory citations for any MCP-capable client. Public, retrieval-only, citation-first.">
+<meta name="description" content="MCP (Model Context Protocol) server for Reserve Bank of India regulatory citations. Free hosted demo or pip install rbi-source-mcp. Retrieval-only, citation-first, daily refresh.">
 <meta name="theme-color" content="#faf6ed">
 <meta property="og:title" content="RBI Source MCP">
 <meta property="og:description" content="The entire RBI corpus, version-aware, citation-first, in your AI workflow.">
@@ -463,6 +463,55 @@
   }
   .install td:first-child { white-space: nowrap; font-weight: 500; color: var(--ink-strong); }
 
+  /* Two-path install cards (v0.8: hosted demo vs PyPI self-host) */
+  .install-paths {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin: 22px 0 26px;
+  }
+  @media (max-width: 760px) { .install-paths { grid-template-columns: 1fr; gap: 14px; } }
+  .install-card {
+    border: 1px solid var(--rule);
+    background: var(--bg-panel);
+    padding: 18px 18px 16px;
+    border-radius: 4px;
+  }
+  .install-card-tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin-bottom: 6px;
+  }
+  .install-card h3 {
+    font-family: var(--serif);
+    font-size: 19px;
+    line-height: 1.25;
+    margin: 0 0 8px;
+    color: var(--ink-strong);
+  }
+  .install-card p {
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink);
+    margin: 0 0 12px;
+  }
+  .install-card pre.install-cmd {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    background: var(--bg);
+    border: 1px solid var(--rule-faint);
+    border-radius: 3px;
+    padding: 10px 12px;
+    margin: 0;
+    overflow-x: auto;
+    color: var(--ink-strong);
+    white-space: pre;
+  }
+
   /* ---------- Sample interaction ---------- */
   .pair { display: grid; grid-template-columns: 1fr; gap: 16px; }
   @media (min-width: 800px) { .pair { grid-template-columns: 1fr 1fr; gap: 20px; } }
@@ -732,38 +781,38 @@
   <div class="wrap-wide">
     <div class="wrap" style="padding:0;">
       <h2>Corpus coverage</h2>
-      <p>Hybrid retrieval over five families of RBI publications. FTS5 (BM25 sparse) fused with sqlite-vec (<code>bge-small-en-v1.5</code> 384-dim dense) via Reciprocal Rank Fusion, k=60.</p>
+      <p>Hybrid retrieval over five families of RBI publications. FTS5 (BM25 sparse) fused with sqlite-vec (<code>bge-base-en-v1.5</code> 768-dim dense) via Reciprocal Rank Fusion, k=60.</p>
     </div>
 
     <div class="stats" role="list" aria-label="Corpus by family">
       <div class="stat" role="listitem">
-        <div class="stat-num">342</div>
+        <div class="stat-num">345</div>
         <div class="stat-label">Master Directions</div>
-        <div class="stat-sub">50,088 chunks</div>
+        <div class="stat-sub">50k+ chunks</div>
       </div>
       <div class="stat" role="listitem">
         <div class="stat-num">290</div>
         <div class="stat-label">Standalone Circulars</div>
-        <div class="stat-sub">1,532 chunks</div>
+        <div class="stat-sub">~1,500 chunks</div>
       </div>
       <div class="stat" role="listitem">
         <div class="stat-num">98</div>
         <div class="stat-label">FAQs</div>
-        <div class="stat-sub">1,828 chunks</div>
+        <div class="stat-sub">~1,800 chunks</div>
       </div>
       <div class="stat" role="listitem">
-        <div class="stat-num">54</div>
+        <div class="stat-num">~50</div>
         <div class="stat-label">Press Releases</div>
-        <div class="stat-sub">357 chunks</div>
+        <div class="stat-sub">rolling, last ~10 days</div>
       </div>
       <div class="stat" role="listitem">
         <div class="stat-num">19</div>
         <div class="stat-label">Master Circulars</div>
-        <div class="stat-sub">2,848 chunks</div>
+        <div class="stat-sub">~2,800 chunks</div>
       </div>
     </div>
 
-    <p class="stats-total">Total <strong>803</strong> documents · <strong>56,653</strong> indexed chunks · plus <strong>9,908</strong> withdrawn-circular records for <code>rbi_check_current</code> lookup</p>
+    <p class="stats-total">Total <strong>~803</strong> documents · <strong>~57,000</strong> indexed chunks · plus <strong>~9,900</strong> withdrawn-circular records for <code>rbi_check_current</code> lookup. Refreshed daily; live counts on <a href="/health">/health</a>.</p>
   </div>
 </section>
 
@@ -809,7 +858,36 @@
   <div class="wrap-wide">
     <div class="wrap" style="padding:0;">
       <h2>Install in 30 seconds</h2>
-      <p>Public, unauthenticated, free. Point any MCP-capable client at <code>https://rbi-source.harshil.ai/mcp/</code>. The four tools become available in your next conversation.</p>
+      <p>Two paths. Pick one.</p>
+    </div>
+
+    <div class="install-paths" role="list" aria-label="Install options">
+      <div class="install-card" role="listitem">
+        <div class="install-card-tag">A · Hosted demo</div>
+        <h3>Zero install, free, public</h3>
+        <p>Point any MCP-capable client at the hosted endpoint. Hosted in Mumbai. Rate-limited to 60 req/min/IP.</p>
+        <div class="url-row" aria-label="MCP endpoint URL">
+          <code id="mcp-url-2">https://rbi-source.harshil.ai/mcp/</code>
+          <button class="copy" data-copy="#mcp-url-2" type="button" aria-label="Copy MCP URL">Copy</button>
+        </div>
+      </div>
+      <div class="install-card" role="listitem">
+        <div class="install-card-tag">B · Self-host</div>
+        <h3>Three lines, runs locally</h3>
+        <p>From <a href="https://pypi.org/project/rbi-source-mcp/" rel="noopener">PyPI</a>. Default embedder is <code>bge-base-en-v1.5</code> in-process — no API keys.</p>
+<pre class="install-cmd"># 1. Install (persistent venv)
+uv tool install rbi-source-mcp     # or: pipx install rbi-source-mcp
+
+# 2. Pull the prebuilt corpus (~80 MB)
+rbi-source-fetch-corpus
+
+# 3. Add to claude_desktop_config.json
+{ "mcpServers": { "rbi-source": { "command": "rbi-source-mcp" } } }</pre>
+      </div>
+    </div>
+
+    <div class="wrap" style="padding:0; margin-top:14px;">
+      <h3 style="margin:0 0 8px; font-size:15px; color:var(--ink-strong);">Connect from your client (path A)</h3>
     </div>
 
     <table class="install">
@@ -962,11 +1040,11 @@
   <div class="wrap">
     <h2>Architecture</h2>
     <ul>
-      <li>Hybrid retrieval. SQLite FTS5 for sparse (BM25) plus sqlite-vec for dense vectors (384-dim, <code>bge-small-en-v1.5</code> via sentence-transformers). Reciprocal Rank Fusion at k=60 calibrated against a 25-case eval set.</li>
+      <li>Hybrid retrieval. SQLite FTS5 for sparse (BM25) plus sqlite-vec for dense vectors (768-dim, <code>bge-base-en-v1.5</code>; locally via sentence-transformers, on the hosted instance via Cloudflare Workers AI). Reciprocal Rank Fusion at k=60 calibrated against a 25-case eval set.</li>
       <li>Public, unauthenticated, retrieval-only. OAuth 2.1 ceremonial endpoints (RFC 8414, 9728, 7591) for clients that require the discovery walk; tokens are not gated on the actual MCP path.</li>
       <li>Streamable-HTTP transport. Per-IP rate limit (60 req/min) on <code>/mcp/</code>, body-size cap (200 KB), HTTP-level disclaimer banner, embedder runs in a thread pool so the asyncio event loop never blocks.</li>
-      <li>Weekly refresh planned via GitHub Action. Smoke-test gate (the eval suite) must pass at ≥80% before the new corpus atomic-swaps onto the Fly volume.</li>
-      <li>Fully open source, MIT. Run your own copy with <code>git clone</code> + <code>uv sync</code> + <code>rbi-source-index-all</code>.</li>
+      <li>Daily refresh via GitHub Actions (02:00 UTC, ~5 min diff build) plus a monthly full rebuild as a silent-re-upload safety net. Smoke gate is paired: ≥80% absolute eval pass AND less than 5pp regression vs the prior release. Each build is sigstore-signed and published to the <a href="https://github.com/harshilmathur/RBI-Source-MCP/releases" rel="noopener">GitHub Releases</a> page.</li>
+      <li>Fully open source, MIT. Self-host in 3 lines: <code>pip install rbi-source-mcp</code> + <code>rbi-source-fetch-corpus</code> + add to <code>claude_desktop_config.json</code>.</li>
     </ul>
   </div>
 </section>
