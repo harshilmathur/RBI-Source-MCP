@@ -55,7 +55,7 @@ Public, unauthenticated, retrieval-only. Hosted in Mumbai. Every response carrie
 
 ```bash
 curl -sS https://rbi-source.harshil.ai/health
-# → {"version":"0.6.x","status":"ok","documents":803}
+# → {"version":"0.8.x","status":"ok","documents":803}
 ```
 
 ### B. Self-host (3 lines, runs locally)
@@ -319,7 +319,7 @@ The workflow at `.github/workflows/corpus-release.yml` runs every Sunday: crawl 
 
 Shipped surface is in [CHANGELOG.md](CHANGELOG.md). What's next:
 
-**v0.9 (next release):** Press Releases full archive (5y year-by-year crawl) · RBI Speeches crawler · pin GitHub Actions to commit SHAs · MCP Registry listing · Cursor one-click install deeplink
+**v0.9 (next release):** Press Releases full archive (5y year-by-year crawl) · RBI Speeches crawler · pin GitHub Actions to commit SHAs · MCP Registry listing
 
 **v1.0+:** Notifications archive (thousands of docs; year-iterating crawler) · `document_versions` historical snapshots → enable `compare_versions` and `as_of` queries · amendment chain extraction → unblocks `find_updates` and `trace_relationships` tools · OCR pipeline for scanned MDs · low-confidence threshold tuned with a fusion-score floor
 
@@ -352,7 +352,7 @@ What it does **not** capture: query strings, clause text, document IDs, response
 
 The website uses Cloudflare Web Analytics (cookieless, no consent banner needed).
 
-To self-host with your own collector: `uv sync --extra hosted` and set `POSTHOG_API_KEY` + optional `POSTHOG_HOST`. Leave both unset to never phone home — the default for every install.
+To self-host with your own collector: `pip install 'rbi-source-mcp[hosted]'` (pulls the PostHog SDK) and set `POSTHOG_API_KEY` + optional `POSTHOG_HOST`. Leave them unset and you can `pip install rbi-source-mcp` without the extra — the default for every install.
 
 ## License
 
