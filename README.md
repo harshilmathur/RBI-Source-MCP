@@ -195,7 +195,7 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
 
 Don't want the hosted endpoint? Fork the repo and run your own copy.
 
-> **v0.7+ note:** PR2 (next release) ships `uvx rbi-source-mcp` + `rbi-source-fetch-corpus` for one-command install with a prebuilt corpus from GitHub Releases. The instructions below crawl-and-build locally, which is the v0.7 advanced path.
+> **v0.7.0 status:** the weekly GitHub Action publishes a prebuilt corpus to [Releases](https://github.com/harshilmathur/RBI-Source-MCP/releases). You can `gh release download latest-corpus --pattern 'corpus.sqlite.xz'` and extract it manually for now. v0.7.1 will ship `rbi-source-fetch-corpus` + `uvx rbi-source-mcp` for a one-command install. Until then the instructions below crawl-and-build locally.
 
 You have two paths for embeddings, controlled by env vars (see `src/rbi_source_mcp/embedding_config.py`):
 
