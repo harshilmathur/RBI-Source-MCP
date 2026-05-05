@@ -4,7 +4,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/rbi-source-mcp.svg)](https://pypi.org/project/rbi-source-mcp/)
 [![License](https://img.shields.io/pypi/l/rbi-source-mcp.svg)](LICENSE)
 [![CI](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/ci.yml)
-[![Weekly corpus build](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/corpus-release.yml/badge.svg)](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/corpus-release.yml)
+[![Daily corpus build](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/corpus-release.yml/badge.svg)](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/corpus-release.yml)
 [![Hosted demo](https://img.shields.io/badge/hosted-rbi--source.harshil.ai-c9a85c)](https://rbi-source.harshil.ai/)
 
 > **The entire RBI corpus, version-aware, citation-first, in your AI workflow.**
@@ -35,7 +35,7 @@ RBI Source MCP collapses that loop. Paste a clause into Claude/Cursor with this 
 | **Master Circulars** | ~20 | ~2.8k | `BS_ViewMasterCirculardetails.aspx` |
 | **TOTAL** | **~810 docs** | **~57k chunks** | |
 
-Plus **~10k withdrawn-circular records** indexed for `rbi_check_current` lookup (metadata only, no full-text indexing). Live counts grow each Sunday — see `GET /health` on the running server for the current numbers.
+Plus **~10k withdrawn-circular records** indexed for `rbi_check_current` lookup (metadata only, no full-text indexing). Live counts refresh daily — see `GET /health` on the running server for the current numbers.
 
 Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-base-en-v1.5` 768-dim dense, embedded via Cloudflare Workers AI on the hosted endpoint) fused via Reciprocal Rank Fusion (k=60). Every response carries a mandatory legal disclaimer. Eval gate: ~25 hand-labeled compliance cases, must pass at ≥80%; currently 100%.
 
@@ -203,13 +203,18 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
    POST /mcp/         MCP streamable-HTTP transport
    *    OAuth 2.1     RFC 8414, 9728, 7591 ceremonial endpoints
 
-   Weekly corpus build (GitHub Actions, Sundays 02:00 UTC)
-   ────────────────────────────────────────────────────────
+   Corpus build (GitHub Actions)
+   ─────────────────────────────
+   Daily at 02:00 UTC (07:30 IST):    diff vs latest-corpus  (~5 min, ~50 CF Neurons)
+   Monthly on the 1st at 03:00 UTC:   full rebuild safety net (~50 min, ~3000 Neurons)
+
    crawl 5 families → diff via content-hash → re-extract changed PDFs
    → embed (CF Workers AI in CI; bge-base @ 768-dim)
    → build new SQLite (FTS5 + chunks_vec virtual table)
    → smoke gate (rbi-source-eval, ≥80% absolute AND <5pp regression)
-   → publish corpus.sqlite.xz as a GitHub Release asset (sigstore-signed)
+   → sigstore-sign + publish corpus.sqlite.xz as a GitHub Release
+   → GC: keep last 14 daily + last 12 monthly timestamped tags + the
+     `latest-corpus` moving alias; delete the rest
 ```
 
 ## Self-host
@@ -220,7 +225,7 @@ Three lines, no Docker, no Cloudflare account, no crawling.
 # 1. Install (persistent — stays available across Claude Desktop restarts)
 uv tool install rbi-source-mcp                  # or: pipx install rbi-source-mcp
 
-# 2. Get the prebuilt corpus (~80 MB compressed, refreshed weekly via GitHub Actions)
+# 2. Get the prebuilt corpus (~80 MB compressed, refreshed daily via GitHub Actions)
 rbi-source-fetch-corpus                         # → ~/.local/share/rbi-source-mcp/db.sqlite
 
 # 3. Wire to Claude Desktop (claude_desktop_config.json) or Claude Code:
@@ -286,7 +291,7 @@ Both providers emit 768-dim vectors against the same `bge-base-en-v1.5` model (B
 
 ### Build the corpus yourself (advanced)
 
-If you want fresher data than the weekly release, or want to fork the indexer:
+If you want a build fresher than the latest daily release (or want to fork the indexer):
 
 ```bash
 git clone https://github.com/harshilmathur/RBI-Source-MCP.git
@@ -301,7 +306,7 @@ uv run rbi-source-index-master-circular --bulk  # Master Circulars
 uv run rbi-source-eval                          # gate at ≥80%
 ```
 
-Crawl + index takes ~30-60 min. The same pipeline runs weekly in [`.github/workflows/corpus-release.yml`](.github/workflows/corpus-release.yml) and publishes the result as a GitHub Release.
+Crawl + index takes ~30-60 min. The same pipeline runs daily in [`.github/workflows/corpus-release.yml`](.github/workflows/corpus-release.yml) (diff mode, ~5 min) and publishes the result as a GitHub Release.
 
 ### Run as an HTTP server (advanced)
 
@@ -311,9 +316,11 @@ For an internal team behind a reverse proxy:
 rbi-source-mcp-http --host 0.0.0.0 --port 8080
 ```
 
-### Weekly corpus refresh
+### Daily corpus refresh
 
-The workflow at `.github/workflows/corpus-release.yml` runs every Sunday: crawl + index + smoke gate (≥80% absolute, <5pp regression) + sigstore-sign + publish to [Releases](https://github.com/harshilmathur/RBI-Source-MCP/releases). Self-hosters get fresh data by re-running `rbi-source-fetch-corpus` whenever they want.
+The workflow at `.github/workflows/corpus-release.yml` runs **daily at 02:00 UTC** (diff mode: ~5 min, ~50 CF Neurons) plus a **monthly full rebuild** on the 1st at 03:00 UTC as a silent-re-upload safety net. Each run: crawl + index + smoke gate (≥80% absolute, <5pp regression) + sigstore-sign + publish to [Releases](https://github.com/harshilmathur/RBI-Source-MCP/releases). Self-hosters re-run `rbi-source-fetch-corpus` whenever they want fresh data; the `latest-corpus` alias always points at the most recent build.
+
+The Releases page is auto-pruned: latest 14 dailies + latest 12 monthlies kept as immutable rollback targets, the rest deleted (last successful run takes ~30s for the GC pass).
 
 ## Roadmap
 

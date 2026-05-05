@@ -27,8 +27,14 @@ name: Weekly corpus release
 
 on:
   schedule:
-    - cron: "0 2 * * 0"           # weekly diff (Sundays 02:00 UTC)
-    - cron: "0 3 1 * *"           # monthly full rebuild (1st @ 03:00 UTC)
+    # Daily diff at 02:00 UTC (07:30 IST) so press releases published the
+    # previous Indian business day are indexed by morning. Diff mode runs
+    # ~5 min total + ~50 CF Neurons; well inside the free quota.
+    - cron: "0 2 * * *"
+    # Monthly full rebuild on the 1st at 03:00 UTC. Catches RBI silent
+    # re-uploads (PDFs replaced without bumping the list-page date) that
+    # diff mode can't see by definition.
+    - cron: "0 3 1 * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -59,8 +65,12 @@ jobs:
       CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       RBI_SOURCE_DB_NEW: ${{ github.workspace }}/data/db.sqlite.new
       RBI_SOURCE_DB: ${{ github.workspace }}/data/db.sqlite.new
-      # Determine effective mode: scheduled monthly (cron 0 3 1 * *) → full,
-      # scheduled weekly → diff, manual → use the input.
+      # Determine effective mode: scheduled monthly cron (0 3 1 * *) → full,
+      # scheduled daily cron (0 2 * * *) → diff, manual → use the input.
+      # Note: on the 1st of each month BOTH crons fire (daily 02:00 UTC,
+      # then monthly 03:00 UTC). The full rebuild at 03:00 overwrites the
+      # latest-corpus alias from the earlier diff. ~10 extra min once a
+      # month; acceptable.
       BUILD_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '0 3 1 * *' && 'full' || 'diff') }}
 
     steps:
@@ -358,6 +368,58 @@ jobs:
           # next run's regression-gate lookup.
           mv eval-current.json eval.json
           gh release upload latest-corpus eval.json --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: GC old timestamped corpus releases
+        # Daily cron means we accumulate ~30 timestamped releases/month at
+        # ~140 MB each. Without GC the Releases page becomes a wall of
+        # corpus tags within weeks. Retention policy:
+        #   - Keep the latest 14 daily timestamped releases (rolling 2 weeks
+        #     of rollback targets).
+        #   - Keep the most recent 12 monthly full rebuilds (1st-of-month
+        #     tags: `corpus-YYYY-MM-01-*`) for ~1 year of monthly safety
+        #     pins.
+        #   - Always keep the `latest-corpus` moving alias (it's a release,
+        #     not a timestamped tag, so it's never in the candidate set).
+        # Delete everything else. Each delete passes --cleanup-tag so the
+        # underlying git tag goes too.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          KEEP_DAILY=14
+          KEEP_MONTHLY=12
+
+          # All corpus-* timestamped tags (excludes the latest-corpus alias),
+          # newest first.
+          gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 500 \
+            --json tagName,createdAt \
+            --jq '.[] | select(.tagName | startswith("corpus-")) | select(.tagName != "latest-corpus") | .tagName' \
+            > /tmp/all-tags.txt
+
+          # Split into monthly (1st-of-month) and dailies. The tag format
+          # `corpus-YYYY-MM-DD-<run_id>` makes this a clean regex.
+          grep -E '^corpus-[0-9]{4}-[0-9]{2}-01-' /tmp/all-tags.txt | head -n "$KEEP_MONTHLY" > /tmp/keep-monthly.txt || true
+          grep -vE '^corpus-[0-9]{4}-[0-9]{2}-01-' /tmp/all-tags.txt | head -n "$KEEP_DAILY"  > /tmp/keep-daily.txt   || true
+
+          # Compute deletion list: everything in all-tags that isn't in
+          # keep-daily or keep-monthly.
+          sort /tmp/keep-daily.txt /tmp/keep-monthly.txt > /tmp/keep-all.txt
+          sort /tmp/all-tags.txt > /tmp/all-sorted.txt
+          comm -23 /tmp/all-sorted.txt /tmp/keep-all.txt > /tmp/delete.txt
+
+          DEL_COUNT=$(wc -l < /tmp/delete.txt | tr -d ' ')
+          KEEP_COUNT=$(wc -l < /tmp/keep-all.txt | tr -d ' ')
+          echo "::notice::GC plan — keeping $KEEP_COUNT (daily $(wc -l < /tmp/keep-daily.txt | tr -d ' ') + monthly $(wc -l < /tmp/keep-monthly.txt | tr -d ' ')); deleting $DEL_COUNT"
+
+          if [ "$DEL_COUNT" -gt 0 ]; then
+            while read -r tag; do
+              [ -z "$tag" ] && continue
+              echo "  delete: $tag"
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+            done < /tmp/delete.txt
+          fi
 
       - name: Upload corpus artifact (workflow run, 30d retention)
         if: always()

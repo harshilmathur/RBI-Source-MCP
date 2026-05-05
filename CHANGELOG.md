@@ -4,6 +4,51 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### Infra: corpus build cadence weekly → daily; release GC
+
+Operational change to `.github/workflows/corpus-release.yml`. No code or
+PyPI release — `rbi-source-fetch-corpus` keeps working unchanged; the
+`latest-corpus` alias just refreshes daily instead of weekly.
+
+**Cron:**
+
+```diff
+- - cron: "0 2 * * 0"           # weekly diff (Sundays 02:00 UTC)
++ - cron: "0 2 * * *"           # daily diff (02:00 UTC = 07:30 IST)
+  - cron: "0 3 1 * *"           # monthly full rebuild (unchanged)
+```
+
+**Why:** diff mode runs ~5 min / ~50 CF Neurons (verified end-to-end).
+Daily catches new RBI press releases within ~24h instead of up to 7
+days. Within CF free tier (~350 Neurons/week vs ~50 before; cap is
+70k/week). On the 1st of each month BOTH crons fire — daily diff at
+02:00 UTC, then monthly full at 03:00 UTC overwrites the alias. ~10
+extra min once a month; acceptable.
+
+**Press release archive walker (PR3): rejected.** RBI's landing page
+exposes the most-recent ~50 PRs. Going past that surface (via PRID
+enumeration of pages RBI doesn't publicly link to) was considered and
+explicitly declined — we trust RBI's curation. Any PR that RBI rolls
+off the landing page before our daily cron picks it up is gone for us
+too. Tradeoff accepted: simpler scope, no questionable scraping of
+unlisted pages.
+
+**Release GC.** Daily cadence means ~30 timestamped releases/month at
+~140 MB each = ~4 GB. Without pruning the Releases page becomes a wall
+of corpus tags within weeks. New step at the tail of the build job:
+
+- Keep last 14 daily timestamped releases (rolling 2-week rollback)
+- Keep last 12 monthly full rebuilds (1st-of-month tags) for ~1y safety
+- Always keep `latest-corpus` moving alias
+- Delete the rest with `--cleanup-tag` so underlying git tags also go
+
+GC step runs ~30 s. Tag-format `corpus-YYYY-MM-DD-<run_id>` makes the
+"is this 1st of month?" check a clean regex. Failures don't block the
+release; the GC pass swallows individual delete errors with `|| true`.
+
+Documented in `corpus-release.yml` step comments + README's
+`Daily corpus refresh` section + the Architecture diagram.
+
 ### v0.8.2 — fix MCP stdio protocol corruption (P0, blocked Claude Desktop)
 
 A user wired `rbi-source-mcp` into Claude Desktop locally and hit:
