@@ -1,16 +1,20 @@
 # RBI Source MCP
 
+[![PyPI](https://img.shields.io/pypi/v/rbi-source-mcp.svg)](https://pypi.org/project/rbi-source-mcp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/rbi-source-mcp.svg)](https://pypi.org/project/rbi-source-mcp/)
+[![License](https://img.shields.io/pypi/l/rbi-source-mcp.svg)](LICENSE)
 [![CI](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/ci.yml)
-[![Weekly refresh](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/refresh.yml/badge.svg)](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/refresh.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Live](https://img.shields.io/badge/live-rbi--source.harshil.ai-c9a85c)](https://rbi-source.harshil.ai/)
+[![Weekly corpus build](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/corpus-release.yml/badge.svg)](https://github.com/harshilmathur/RBI-Source-MCP/actions/workflows/corpus-release.yml)
+[![Hosted demo](https://img.shields.io/badge/hosted-rbi--source.harshil.ai-c9a85c)](https://rbi-source.harshil.ai/)
 
 > **The entire RBI corpus, version-aware, citation-first, in your AI workflow.**
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that brings authoritative Reserve Bank of India regulatory information into any MCP-capable client (Claude Code, Claude.ai, Claude Desktop, ChatGPT, Cursor, Claude Cowork, Cline, Continue, Goose, Zed, ...) with hybrid retrieval over Master Directions, Standalone Circulars, Master Circulars, Press Releases, and FAQs, citation-first responses, and explicit withdrawal/supersession detection.
 
-**Live hosted endpoint** (free, no auth): `https://rbi-source.harshil.ai/mcp/` · [install in 30 seconds ↓](#quick-start)
+Two ways to use it:
+
+- **Try the hosted demo:** `https://rbi-source.harshil.ai/mcp/` (free, no auth, no install) · [client setup ↓](#connect-from-your-client)
+- **Self-host in 3 lines:** `pip install rbi-source-mcp` + `rbi-source-fetch-corpus` + Claude Desktop config · [details ↓](#self-host)
 
 > ⚠️ **Unofficial, community-maintained open-source tool.** RBI Source MCP is not affiliated with, endorsed by, or sponsored by the Reserve Bank of India. RBI® is a trademark of the Reserve Bank of India. For takedown or legal inquiries, open an issue.
 
@@ -37,19 +41,32 @@ Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-base-en-v1.5` 768-dim d
 
 ## Quick start
 
-The hosted endpoint is live and free to use:
+Two paths. Pick one.
+
+### A. Use the hosted demo (zero install)
+
+The maintainer runs a free, no-auth instance:
 
 ```
 https://rbi-source.harshil.ai/mcp/
 ```
 
-Public, unauthenticated, retrieval-only. Hosted by the maintainer in Mumbai. Every response carries the mandatory legal disclaimer.
+Public, unauthenticated, retrieval-only. Hosted in Mumbai. Every response carries the mandatory legal disclaimer. Good for evaluation; rate-limited to 60 req/min/IP.
 
-> Try it without installing anything:
-> ```bash
-> curl -sS https://rbi-source.harshil.ai/health
-> # → {"version":"...","status":"ok","documents":803}
-> ```
+```bash
+curl -sS https://rbi-source.harshil.ai/health
+# → {"version":"0.6.x","status":"ok","documents":818}
+```
+
+### B. Self-host (3 lines, runs locally)
+
+```bash
+pip install rbi-source-mcp                       # or: uv tool install / pipx install
+rbi-source-fetch-corpus                          # downloads ~80MB sigstore-signed corpus
+# Add to claude_desktop_config.json: {"mcpServers": {"rbi-source": {"command": "rbi-source-mcp"}}}
+```
+
+Defaults to the local `bge-base-en-v1.5` embedder (no API keys). [Full self-host guide ↓](#self-host)
 
 ### Connect from your client
 
@@ -166,13 +183,17 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
    ./data/db.sqlite      FTS5 + sqlite-vec, atomic-swap on refresh
    ./data/db-prev.sqlite one-command rollback target
 
-   Default embedding path: bge-small-en-v1.5 in-process via
-   sentence-transformers (~135 MB model on disk, ~3-8s cold load,
-   ~50-100ms per query). With a 10K-entry process-local LRU cache,
-   repeat queries skip the cost entirely.
+   Default embedding path: bge-base-en-v1.5 in-process via
+   sentence-transformers (~440 MB model on disk, ~3-8s cold load,
+   ~80-120ms per query on CPU). With a 10K-entry process-local LRU
+   cache, repeat queries skip the cost entirely.
 
-   Optional Cloudflare Workers AI path: bge-base-en-v1.5 @ 768-dim,
-   ~250ms/call over HTTPS. Picked via RBI_EMBEDDING_PROVIDER=cloudflare.
+   Optional Cloudflare Workers AI path: same model, ~250ms/call over
+   HTTPS, no torch on the box. Picked via
+   RBI_EMBEDDING_PROVIDER=cloudflare.
+
+   Both paths emit 768-dim vectors → ONE corpus, ONE schema, no
+   client-side dim juggling.
 
    HTTP-mode public surface (rbi-source-mcp-http)
    ──────────────────────────────────────────────
@@ -261,7 +282,7 @@ export CF_ACCOUNT_ID=...                        # https://dash.cloudflare.com �
 export CF_API_TOKEN=...                         # https://dash.cloudflare.com/profile/api-tokens → "Workers AI: Read"
 ```
 
-CF embeddings are 768-dim (the prebuilt corpus is also 768-dim from CF, so this is the matching path for the published corpus). Local embeddings are 384-dim — the runtime auto-switches dimensions based on the corpus, so you can't accidentally mismatch.
+Both providers emit 768-dim vectors against the same `bge-base-en-v1.5` model (BAAI weights for local; Cloudflare-hosted variant for the API). The prebuilt corpus matches; runtime + corpus mismatches are caught by `rbi-source-doctor`'s `corpus_runtime_match` check before any retrieval happens.
 
 ### Build the corpus yourself (advanced)
 
@@ -298,9 +319,9 @@ The workflow at `.github/workflows/corpus-release.yml` runs every Sunday: crawl 
 
 Shipped surface is in [CHANGELOG.md](CHANGELOG.md). What's next:
 
-**v1.0:** MCP Registry listing · Cursor one-click install deeplink · Press Releases full archive (year-by-year crawl) · low-confidence threshold tuned with a fusion-score floor
+**v0.9 (next release):** Press Releases full archive (5y year-by-year crawl) · RBI Speeches crawler · pin GitHub Actions to commit SHAs · MCP Registry listing · Cursor one-click install deeplink
 
-**v1.1+:** Notifications archive (thousands of docs; needs a year-iterating crawler) · `document_versions` historical snapshots → enable `compare_versions` and `as_of` queries · amendment chain extraction → unblocks `find_updates` and `trace_relationships` tools · OCR pipeline for scanned MDs
+**v1.0+:** Notifications archive (thousands of docs; year-iterating crawler) · `document_versions` historical snapshots → enable `compare_versions` and `as_of` queries · amendment chain extraction → unblocks `find_updates` and `trace_relationships` tools · OCR pipeline for scanned MDs · low-confidence threshold tuned with a fusion-score floor
 
 ## Contributing
 
