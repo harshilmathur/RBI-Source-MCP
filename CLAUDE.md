@@ -11,6 +11,11 @@ entire RBI corpus. **Retrieval-only by design** — never issues compliance
 verdicts. The legal posture (no-legal-advice disclaimer on every response)
 is load-bearing; do not change it without explicit user direction.
 
+**Status as of v0.8.1 (2026-05-05):** public OSS repo, published on PyPI
+(`pip install rbi-source-mcp`), corpus distributed via signed GitHub
+Releases. Maintainer's hosted demo runs at `rbi-source.harshil.ai`.
+Three-line install works end-to-end for any user.
+
 ## Key files
 
 ```
@@ -19,37 +24,42 @@ src/rbi_source_mcp/
   ├─ server_http.py         Streamable-HTTP transport (Starlette ASGI app + uvicorn runner).
   │                         Reuses _build_server() — same tools, same disclaimer wrap. Endpoints:
   │                         /, /health, /mcp/ (note trailing slash).
+  ├─ fetch_corpus.py        v0.8 — `rbi-source-fetch-corpus` CLI. Downloads + verifies
+  │                         (SHA256 + optional sigstore) + decompresses + schema-checks
+  │                         + atomically installs the corpus from GitHub Releases.
+  │                         Read-only via SQLite URI mode=ro for the schema check.
+  ├─ doctor.py              v0.8 — `rbi-source-doctor` preflight CLI. 8 checks:
+  │                         python, sqlite_vec, corpus, corpus_runtime_match
+  │                         (dim match), hf_cache, cf_creds, torch, local_model.
   ├─ disclaimer.py          DISCLAIMER + LLM_INSTRUCTION constants. Wording is load-bearing.
-  ├─ db.py                  SQLite schema, _migrate_schema, hybrid_search (FTS5 + sqlite-vec + RRF)
+  ├─ db.py                  SQLite schema, _migrate_schema, corpus_meta KV table,
+  │                         CORPUS_SCHEMA_VERSION constant, hybrid_search
+  │                         (FTS5 + sqlite-vec + RRF). _stamp_schema_version
+  │                         only stamps when missing (never overwrites).
   ├─ check_current.py       Withdrawn/active lookup (3-step)
+  ├─ telemetry.py           Optional PostHog (env-gated). MCP_INSTANCE_ID /
+  │                         MCP_REGION env vars; FLY_* fallback for back-compat.
   ├─ mcp/
   │   ├─ check_compliance.py  HEADLINE tool — paste clause, get cited provisions
   │   ├─ search.py            Direct keyword/topic search
   │   └─ get_document.py      Document metadata + ToC
-  ├─ crawler/
-  │   ├─ md_list.py / md_detail.py        Master Directions
-  │   ├─ withdrawn_list.py                Withdrawn-circulars metadata (multi-section parser)
-  │   ├─ circular_list.py                 Standalone Circulars list page
-  │   ├─ notif_detail.py                  Generic detail-page fetcher (PDF + HTML body)
-  │   ├─ press_release_list.py / press_release_detail.py
-  │   ├─ faq_list.py                      FAQs (HTML-only; do NOT strip <form>)
-  │   ├─ master_circular_list.py          2-step: index → 12 categories → direct PDFs
-  │   ├─ pdf_fetch.py                     PDF download with WAF bypass headers
-  │   └─ refresh.py                       Weekly orchestrator for MD list + withdrawn list
+  ├─ crawler/                ... (5 families: md_list, withdrawn_list, circular_list,
+  │                              press_release_list, faq_list, master_circular_list,
+  │                              notif_detail, pdf_fetch, refresh)
   ├─ extractor/pdf.py        pdftotext wrapper, RBI-ref + issue-date parsers
   ├─ embedding_config.py     Provider/model/dim driven by env (RBI_EMBEDDING_*).
-  │                          Defaults: local provider + bge-small@384 (back-compat).
-  │                          Production sets cloudflare + bge-base@768.
+  │                          v0.8.1 unified default: bge-base-en-v1.5 @ 768-dim
+  │                          for BOTH local and cloudflare providers.
+  │                          LOCAL_MODEL_REVISION env pins the HF revision.
   ├─ indexer/
   │   ├─ chunk.py            Outline-aware paragraph chunker
-  │   ├─ embed.py            Provider-dispatching embedder. Local path uses
-  │   │                      sentence-transformers (lazy singleton); cloud path
-  │   │                      POSTs to Cloudflare Workers AI (httpx + 100/batch +
-  │   │                      retry). embed_query() has a 10K-entry LRU cache
-  │   │                      keyed on raw user text — saves CF round-trips on
-  │   │                      repeat queries (watchdog, popular questions).
+  │   ├─ embed.py            Provider-dispatching embedder. Local: sentence-transformers
+  │   │                      (lazy singleton, revision-pinned); cloud: Cloudflare Workers AI.
+  │   │                      embed_query() has a 10K-entry LRU cache keyed on raw text.
   │   ├─ persist.py          SHARED — upsert document + chunks + embeddings
-  │   ├─ build_md_index.py + build_all.py
+  │   ├─ build_md_index.py + build_all.py        (already_indexed_ids: content-hash
+  │   │                                           skip via JOIN on document_id +
+  │   │                                           date(fetched_at) >= last_updated_at)
   │   ├─ build_circular_index.py + build_all_circulars.py
   │   ├─ build_press_release_index.py
   │   ├─ build_faq_index.py
@@ -58,13 +68,24 @@ src/rbi_source_mcp/
       ├─ cases.py            ~25 hand-labeled test cases (REG-4 regression suite)
       └─ runner.py           Eval gate; passes at ≥80%
 
+.github/workflows/
+  ├─ ci.yml                  Tests on push/PR (matrix: 3.11, 3.12)
+  ├─ corpus-release.yml      Weekly Sun 02:00 UTC diff build + monthly 1st full
+  │                          rebuild. Crawl → index → smoke gate (≥80% absolute
+  │                          AND <5pp regression) → sigstore-sign → publish to
+  │                          GitHub Releases (timestamped tag + latest-corpus alias).
+  └─ release.yml             PyPI publish on v* tag via trusted publishing OIDC.
+                             Sign-in-build-job pattern: build + sigstore-sign +
+                             then publish + attach-release run in parallel from
+                             signed artifacts.
+
 scripts/                     Ops + research tooling, not shipped in the runtime image.
   ├─ reembed_to_bge_base.py  Corpus re-embed across providers (A/B testing)
   ├─ eval_dump.py + compare_ab.py + compare_3way.py   Embedding-model bake-off
   (Deploy/QA scripts moved to ~/code/rbi-source-mcp-deploy/ in v0.7.0.)
 
-tests/                       94 unit tests passing, 3 skipped
-data/db.sqlite              ~250 MB at 768-dim; ~810 docs, ~57k chunks (drifts weekly)
+tests/                       122 unit tests passing, 3 skipped (94 baseline + 28 fetch_corpus)
+data/db.sqlite              ~250 MB at 768-dim; ~803 docs, ~57k chunks (drifts weekly)
 ```
 
 ## Hosted endpoint (maintainer's instance — not part of OSS)
@@ -81,18 +102,28 @@ proxied).
 
 ## Console scripts
 
+Headline UX (the three a self-host user actually touches):
+
 ```
-rbi-source-mcp                       Run the MCP server over stdio (local Claude Code)
-rbi-source-mcp-http [--host --port]  Run the MCP server over streamable HTTP (hosted)
+rbi-source-mcp                       Run the MCP server over stdio (Claude Desktop / Claude Code)
+rbi-source-fetch-corpus              Download + verify + install the prebuilt corpus from GH Releases
+rbi-source-doctor                    Preflight: python / sqlite-vec / corpus / dim match / hf-cache / model
+```
+
+Advanced (used by the GHA corpus-release workflow + by users who want to
+crawl + index from scratch):
+
+```
+rbi-source-mcp-http [--host --port]  Streamable-HTTP transport (for hosting behind a proxy)
 rbi-source-crawl                     Refresh MD list + withdrawn list
 rbi-source-index <md_id>             Index one Master Direction
-rbi-source-index-all                 Bulk-index all 342 Master Directions
+rbi-source-index-all                 Bulk-index all Master Directions
 rbi-source-index-circular <notif_id> Index one standalone circular
-rbi-source-index-all-circulars       Bulk-index 290 standalone circulars
+rbi-source-index-all-circulars       Bulk-index ~290 standalone circulars
 rbi-source-index-press-release [--bulk]
 rbi-source-index-faq [--bulk]
 rbi-source-index-master-circular --bulk
-rbi-source-eval                      Run the 25-case eval gate
+rbi-source-eval                      Run the ~25-case eval gate (≥80% must pass)
 ```
 
 All scripts use `RBI_SOURCE_DB` env var (defaults to `./data/db.sqlite`).
@@ -156,21 +187,20 @@ All scripts use `RBI_SOURCE_DB` env var (defaults to `./data/db.sqlite`).
 ## Testing
 
 ```bash
-uv run pytest -q                 # 82 unit tests
+uv run pytest -q                 # 122 unit tests (94 baseline + 28 fetch_corpus)
 uv run ruff check src/ tests/    # lint, must be clean
 uv run rbi-source-eval           # corpus quality gate (must pass at ≥80%)
-uv run python scripts/integration_test_public.py    # 37 end-to-end cases against the live public endpoint
 ```
 
-The integration script hits `https://rbi-source.harshil.ai/mcp/` over real
-HTTPS and exercises every tool, every documented topic hint, error envelopes,
-security middlewares, and the HTTP transport layer. Pacing is 0.8s/call so
-the rate-limit case at the end isn't poisoned by earlier traffic. Run it
-after every deploy to catch regressions on the public surface. JSON reports
-land in `.gstack/integration-reports/`.
+End-to-end integration tests against the live public endpoint live in
+`~/code/rbi-source-mcp-deploy/scripts/integration_test_public.py` (private
+deploy repo as of v0.7.0). Run after every deploy of the maintainer's
+hosted instance to catch regressions on the public surface.
 
 The eval is the canonical regression test — if it drops below 80%, retrieval
 quality has regressed and the build should fail. Currently 100% (25/25).
+The corpus-release workflow (`.github/workflows/corpus-release.yml`) gates
+publish on ≥80% absolute AND <5pp regression vs the prior release's eval.
 
 ## Workflow conventions
 
@@ -188,17 +218,23 @@ quality has regressed and the build should fail. Currently 100% (25/25).
 
 | Area | Status |
 |---|---|
-| Hosted endpoint (maintainer's, not OSS) | ✓ LIVE at `https://rbi-source.harshil.ai/mcp/` |
+| **PyPI distribution** | ✓ LIVE at `pip install rbi-source-mcp` (v0.8.1, sigstore-signed) |
+| **Repo public** | ✓ flipped public 2026-05-05; OSS surface clean |
+| Hosted endpoint (maintainer's demo) | ✓ LIVE at `https://rbi-source.harshil.ai/mcp/` |
 | Custom domain | ✓ rbi-source.harshil.ai via Cloudflare DNS |
 | HTTP transport for hosted mode | ✓ landed — server_http.py + rbi-source-mcp-http console script |
-| Weekly refresh GH Action | Configured but not yet running on schedule |
-| Notifications archive (thousands of docs) | Year-by-year POST-form crawler not yet built |
+| Weekly corpus build → GitHub Releases | ✓ corpus-release.yml runs Sunday 02:00 UTC; bootstrap completed 2026-05-05 |
+| `rbi-source-fetch-corpus` + `rbi-source-doctor` | ✓ landed in v0.8 |
+| Press Releases archive (5y backfill) | **Next up — PR3.** Date-window POST-form walker not yet built |
+| RBI Speeches | Deferred — single-page list, ~few hundred entries |
+| Notifications archive (thousands of docs) | Deferred — separate from PRs/standalone-circulars |
 | `document_versions` (history) | Currently only stores current state |
 | Amendment chain extraction | Blocks `find_updates` + `trace_relationships` tools |
 | OCR pipeline for scanned MDs | Currently excluded with `excluded: ocr_required` flag |
-| Public stats page from telemetry | Telemetry sink works; stats page not built |
+| Public stats page from telemetry | PostHog dashboard exists for maintainer; public page not built |
 | `compare_versions` tool | Blocked on `document_versions` |
 | `find_updates` tool | Blocked on amendment-chain extraction |
+| GHA actions pinned to commit SHAs | Currently moving tags (`@v4`, `@release/v1`); pin in v0.9 |
 
 ## Project memory
 
