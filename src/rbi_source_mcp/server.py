@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -461,8 +462,50 @@ def _build_server() -> Server:
     return server
 
 
+def _configure_stdio_logging() -> None:
+    """Force ALL log output to stderr.
+
+    MCP stdio transport reserves stdout for line-delimited JSON-RPC. Any
+    stray non-JSON byte on stdout corrupts the protocol — the client
+    raises `Unexpected non-whitespace character after JSON at position N`
+    and the server appears broken to the user.
+
+    structlog's default `PrintLoggerFactory()` writes to sys.stdout. We
+    rebind it to sys.stderr here, plus do the same for the stdlib logging
+    root (in case the MCP SDK or any transitive dep uses logging.warning
+    or similar). HuggingFace / sentence-transformers / transformers all
+    print warnings via the warnings module which already goes to stderr,
+    so those are fine.
+
+    Bug fix in v0.8.2 — caught when a real user wired this into Claude
+    Desktop locally. Reproduces with: `rbi-source-mcp` over stdio +
+    any tool call that touches the logger (every successful call does).
+    """
+    import logging
+
+    structlog.configure(
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        processors=[
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.add_log_level,
+            structlog.dev.ConsoleRenderer(colors=False),
+        ],
+    )
+    # stdlib logging — anyone using `logging.getLogger(...)` instead of
+    # structlog. Default StreamHandler writes to stderr already, but be
+    # explicit so an upstream dep can't surprise us.
+    handler = logging.StreamHandler(stream=sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    root = logging.getLogger()
+    # Replace any pre-existing handlers (e.g., from `logging.basicConfig` in
+    # a transitive import) so nothing slips onto stdout.
+    root.handlers = [handler]
+    root.setLevel(logging.WARNING)
+
+
 async def _run_stdio() -> None:
     """Run the server over stdio (for local Claude Desktop / Claude Code use)."""
+    _configure_stdio_logging()
     server = _build_server()
     logger.info("server.start", version=__version__, db=str(_resolve_db_path()))
     async with stdio_server() as (read_stream, write_stream):
