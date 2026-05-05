@@ -70,7 +70,7 @@ src/rbi_source_mcp/
 
 .github/workflows/
   ├─ ci.yml                  Tests on push/PR (matrix: 3.11, 3.12)
-  ├─ corpus-release.yml      Weekly Sun 02:00 UTC diff build + monthly 1st full
+  ├─ corpus-release.yml      Daily 02:00 UTC diff build + monthly 1st-of-month full
   │                          rebuild. Crawl → index → smoke gate (≥80% absolute
   │                          AND <5pp regression) → sigstore-sign → publish to
   │                          GitHub Releases (timestamped tag + latest-corpus alias).
@@ -85,7 +85,7 @@ scripts/                     Ops + research tooling, not shipped in the runtime 
   (Deploy/QA scripts moved to ~/code/rbi-source-mcp-deploy/ in v0.7.0.)
 
 tests/                       122 unit tests passing, 3 skipped (94 baseline + 28 fetch_corpus)
-data/db.sqlite              ~250 MB at 768-dim; ~803 docs, ~57k chunks (drifts weekly)
+data/db.sqlite              ~250 MB at 768-dim; ~803 docs, ~57k chunks (drifts daily)
 ```
 
 ## Hosted endpoint (maintainer's instance — not part of OSS)
@@ -223,7 +223,7 @@ publish on ≥80% absolute AND <5pp regression vs the prior release's eval.
 | Hosted endpoint (maintainer's demo) | ✓ LIVE at `https://rbi-source.harshil.ai/mcp/` |
 | Custom domain | ✓ rbi-source.harshil.ai via Cloudflare DNS |
 | HTTP transport for hosted mode | ✓ landed — server_http.py + rbi-source-mcp-http console script |
-| Weekly corpus build → GitHub Releases | ✓ corpus-release.yml runs Sunday 02:00 UTC; bootstrap completed 2026-05-05 |
+| Corpus build → GitHub Releases | ✓ corpus-release.yml: daily 02:00 UTC diff + monthly 1st-of-month full; bootstrap completed 2026-05-05; switched from weekly→daily on 2026-05-05 |
 | `rbi-source-fetch-corpus` + `rbi-source-doctor` | ✓ landed in v0.8 |
 | Press Releases archive (5y backfill) | **Next up — PR3.** Date-window POST-form walker not yet built |
 | RBI Speeches | Deferred — single-page list, ~few hundred entries |
