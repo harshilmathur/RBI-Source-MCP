@@ -68,13 +68,6 @@ rbi-source-fetch-corpus                          # downloads ~80MB sigstore-sign
 
 Defaults to the local `bge-base-en-v1.5` embedder (no API keys). [Full self-host guide ↓](#self-host)
 
-### One-click install (Cursor)
-
-[![Add hosted RBI Source MCP to Cursor](https://img.shields.io/badge/Cursor-Add%20hosted%20demo-1f6feb?logo=cursor&logoColor=white)](https://cursor.com/install-mcp?name=rbi-source&config=eyJ1cmwiOiAiaHR0cHM6Ly9yYmktc291cmNlLmhhcnNoaWwuYWkvbWNwLyIsICJ0eXBlIjogInN0cmVhbWFibGUtaHR0cCJ9)
-[![Add local RBI Source MCP to Cursor](https://img.shields.io/badge/Cursor-Add%20local%20install-1f6feb?logo=cursor&logoColor=white)](https://cursor.com/install-mcp?name=rbi-source&config=eyJjb21tYW5kIjogInJiaS1zb3VyY2UtbWNwIn0)
-
-Click "Add hosted demo" if you haven't done anything yet (uses the public endpoint, no install). Click "Add local install" only after you've run `pip install rbi-source-mcp` (uses the stdio path).
-
 ### Connect from your client
 
 | Client | How |
