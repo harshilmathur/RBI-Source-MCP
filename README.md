@@ -193,57 +193,104 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
 
 ## Self-host
 
-Don't want the hosted endpoint? Fork the repo and run your own copy.
+Three lines, no Docker, no Cloudflare account, no crawling.
 
-> **v0.7.0 status:** the weekly GitHub Action publishes a prebuilt corpus to [Releases](https://github.com/harshilmathur/RBI-Source-MCP/releases). You can `gh release download latest-corpus --pattern 'corpus.sqlite.xz'` and extract it manually for now. v0.7.1 will ship `rbi-source-fetch-corpus` + `uvx rbi-source-mcp` for a one-command install. Until then the instructions below crawl-and-build locally.
+```bash
+# 1. Install the package
+uvx rbi-source-mcp                              # one-shot, or: pip install rbi-source-mcp
 
-You have two paths for embeddings, controlled by env vars (see `src/rbi_source_mcp/embedding_config.py`):
+# 2. Get the prebuilt corpus (~80 MB compressed, refreshed weekly via GitHub Actions)
+rbi-source-fetch-corpus                         # → ~/.local/share/rbi-source-mcp/db.sqlite
 
-- **Local (default)**: `sentence-transformers` (bge-small-en-v1.5 @ 384-dim) running in-process. ~135 MB model download on first use, cached at `~/.cache/huggingface/hub/`. No API keys.
-- **Cloud**: Cloudflare Workers AI. Free tier covers a weekly 56k-chunk corpus build + thousands of queries. No torch on the box.
+# 3. Wire to Claude Desktop (claude_desktop_config.json) or Claude Code:
+#    {
+#      "mcpServers": {
+#        "rbi-source": { "command": "rbi-source-mcp" }
+#      }
+#    }
+```
+
+That's it. The default embedding path runs `bge-small-en-v1.5` in-process via `sentence-transformers` (~135 MB model auto-downloaded on first query, cached at `~/.cache/huggingface/hub/`). No external API needed. CPU-only — works on a laptop.
+
+### Verify the install
+
+```bash
+rbi-source-doctor                               # runs preflight: Python, sqlite-vec, corpus, HF cache, model
+```
+
+Should print all-green. If anything fails, the output tells you the specific fix.
+
+### Register with Claude Code (stdio)
+
+```bash
+claude mcp add rbi-source -s user -- rbi-source-mcp
+```
+
+### Pin a corpus version (optional)
+
+`rbi-source-fetch-corpus` defaults to the moving `latest-corpus` release. For reproducible deploys, pin to an immutable timestamped tag:
+
+```bash
+rbi-source-fetch-corpus --tag corpus-2026-05-04-1234567
+```
+
+Browse available tags at [github.com/harshilmathur/RBI-Source-MCP/releases](https://github.com/harshilmathur/RBI-Source-MCP/releases).
+
+### Cryptographic verification (optional)
+
+By default the fetch script verifies SHA256 (mandatory). For full sigstore signature verification against the GitHub Actions OIDC identity:
+
+```bash
+pip install 'rbi-source-mcp[verify]'            # pulls sigstore-python (~25 MB)
+rbi-source-fetch-corpus --verify-sigstore
+```
+
+This refuses to install any corpus that wasn't signed by the official `corpus-release.yml` workflow on `main`. Defends against PyPI compromise + tampered release assets.
+
+### Cloudflare Workers AI (alternative embedder)
+
+If you'd rather embed via the Cloudflare API instead of running torch locally:
+
+```bash
+export RBI_EMBEDDING_PROVIDER=cloudflare
+export RBI_EMBEDDING_MODEL=@cf/baai/bge-base-en-v1.5
+export RBI_EMBEDDING_DIM=768
+export CF_ACCOUNT_ID=...                        # https://dash.cloudflare.com → Account ID
+export CF_API_TOKEN=...                         # https://dash.cloudflare.com/profile/api-tokens → "Workers AI: Read"
+```
+
+CF embeddings are 768-dim (the prebuilt corpus is also 768-dim from CF, so this is the matching path for the published corpus). Local embeddings are 384-dim — the runtime auto-switches dimensions based on the corpus, so you can't accidentally mismatch.
+
+### Build the corpus yourself (advanced)
+
+If you want fresher data than the weekly release, or want to fork the indexer:
 
 ```bash
 git clone https://github.com/harshilmathur/RBI-Source-MCP.git
 cd RBI-Source-MCP
-uv sync                                              # core deps + sentence-transformers (bundled in v0.7)
-
-# Optional: switch to Cloudflare instead of local embeddings
-# export RBI_EMBEDDING_PROVIDER=cloudflare
-# export RBI_EMBEDDING_MODEL=@cf/baai/bge-base-en-v1.5
-# export RBI_EMBEDDING_DIM=768
-# export CF_ACCOUNT_ID=...                           # https://dash.cloudflare.com → Account ID
-# export CF_API_TOKEN=...                            # https://dash.cloudflare.com/profile/api-tokens → "Workers AI: Read"
-
-# Crawl + index — populates the local corpus. ~30-60 min.
-uv run rbi-source-crawl                            # documents + withdrawn metadata
-uv run rbi-source-index-all                        # Master Directions
-uv run rbi-source-index-all-circulars              # Standalone Circulars
-uv run rbi-source-index-press-release --bulk      # Press Releases
-uv run rbi-source-index-faq --bulk                # FAQs
-uv run rbi-source-index-master-circular --bulk    # Master Circulars
-
-# Verify the eval gate before serving
-uv run rbi-source-eval                             # must pass at ≥80%
-
-# Run the MCP server over stdio (for local Claude Code / Claude Desktop)
-uv run rbi-source-mcp
-
-# Or the streamable-HTTP server (for an internal team behind a reverse proxy)
-uv run rbi-source-mcp-http --host 0.0.0.0 --port 8080
+uv sync
+uv run rbi-source-crawl                         # crawl list pages
+uv run rbi-source-index-all                     # index Master Directions
+uv run rbi-source-index-all-circulars           # Standalone Circulars
+uv run rbi-source-index-press-release --bulk    # Press Releases
+uv run rbi-source-index-faq --bulk              # FAQs
+uv run rbi-source-index-master-circular --bulk  # Master Circulars
+uv run rbi-source-eval                          # gate at ≥80%
 ```
 
-### Register a self-host with Claude Code (stdio)
+Crawl + index takes ~30-60 min. The same pipeline runs weekly in [`.github/workflows/corpus-release.yml`](.github/workflows/corpus-release.yml) and publishes the result as a GitHub Release.
+
+### Run as an HTTP server (advanced)
+
+For an internal team behind a reverse proxy:
 
 ```bash
-claude mcp add rbi-source \
-  -s user \
-  -e RBI_SOURCE_DB=$(pwd)/data/db.sqlite \
-  -- $(pwd)/.venv/bin/rbi-source-mcp
+rbi-source-mcp-http --host 0.0.0.0 --port 8080
 ```
 
 ### Weekly corpus refresh
 
-The workflow at `.github/workflows/corpus-release.yml` runs every Sunday in this repo's GitHub Actions: crawl + index + smoke gate + publish a GitHub Release artifact. Self-hosters who want fresh data without re-crawling can pull the latest release artifact from this repo's [Releases page](https://github.com/harshilmathur/RBI-Source-MCP/releases).
+The workflow at `.github/workflows/corpus-release.yml` runs every Sunday: crawl + index + smoke gate (≥80% absolute, <5pp regression) + sigstore-sign + publish to [Releases](https://github.com/harshilmathur/RBI-Source-MCP/releases). Self-hosters get fresh data by re-running `rbi-source-fetch-corpus` whenever they want.
 
 ## Roadmap
 

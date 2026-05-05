@@ -491,29 +491,30 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 
 
 def _stamp_schema_version(conn: sqlite3.Connection) -> None:
-    """Write the current CORPUS_SCHEMA_VERSION only when missing.
+    """Stamp CORPUS_SCHEMA_VERSION only on a corpus that has none.
 
-    Read-first to avoid the UPSERT-bumps-updated_at-on-every-open pattern
-    that would turn every read-path connection into a writer. That matters
-    because:
-      - readers on read-only mounts (a sane self-host pattern) would
-        crash with `OperationalError: attempt to write a readonly database`
-      - WAL writers contend under concurrent stdio invocations
-      - the value almost never changes (only on a schema bump), so the
-        write-on-every-open was strictly cost without benefit
+    This is the first-open initializer for fresh corpora. We do NOT
+    overwrite an existing value, even one that doesn't match the current
+    constant — that would silently mask version mismatches at the runtime
+    fetch-script schema check, which is exactly what schema versioning
+    exists to catch.
 
-    Bump the CORPUS_SCHEMA_VERSION constant when a schema change breaks
-    runtime backward-compat; existing corpora carrying an older value get
-    overwritten on the first write-allowed open after a build.
+    The build pipeline is responsible for bumping the version when the
+    schema actually changes (via an explicit `set_meta(c, 'schema_version',
+    new_version)` call after the migration step). Stamp-only-when-missing
+    keeps fresh corpora correct and lets cross-version mismatches surface.
+
+    Read-only mounts: the get_meta read works fine; the set_meta write
+    on a fresh corpus would fail, which we tolerate (the corpus stamp is
+    a build-time concern; a read-only-mounted corpus is by definition
+    already built and stamped). Caught by /review #6 (v0.7.1).
     """
     existing = get_meta(conn, "schema_version")
-    if existing == CORPUS_SCHEMA_VERSION:
+    if existing is not None:
         return
     try:
         set_meta(conn, "schema_version", CORPUS_SCHEMA_VERSION)
     except sqlite3.OperationalError as exc:
-        # Read-only mount path: don't crash the open. The corpus stamp is
-        # a build-time concern; runtime can run without it.
         logger.debug("db.schema_version.write_skip", error=str(exc))
 
 

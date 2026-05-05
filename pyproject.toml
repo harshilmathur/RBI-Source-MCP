@@ -1,6 +1,6 @@
 [project]
 name = "rbi-source-mcp"
-version = "0.7.1"
+version = "0.8.0"
 description = "An MCP server for RBI Master Directions: version-aware, citation-first, knows what's withdrawn."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -52,6 +52,14 @@ dependencies = [
 hosted = [
     "posthog>=3.0.0",
 ]
+# v0.8.0: optional cryptographic verification of the corpus signature
+# in `rbi-source-fetch-corpus --verify-sigstore`. The sigstore-python
+# package is heavy (~25 MB on disk) so we keep it opt-in. SHA256 verify
+# (default) catches transport corruption; sigstore verify catches
+# tampering by anyone short of the GitHub Actions OIDC root.
+verify = [
+    "sigstore>=3.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -62,8 +70,14 @@ dev = [
 ]
 
 [project.scripts]
+# Headline UX — most users only need these three.
 rbi-source-mcp = "rbi_source_mcp.server:main"
 rbi-source-mcp-http = "rbi_source_mcp.server_http:main"
+rbi-source-fetch-corpus = "rbi_source_mcp.fetch_corpus:main"
+rbi-source-doctor = "rbi_source_mcp.doctor:main"
+# Advanced — used by the GitHub Actions corpus-release workflow and by
+# users who want to crawl + index from scratch instead of fetching the
+# prebuilt corpus.
 rbi-source-crawl = "rbi_source_mcp.crawler.refresh:main"
 rbi-source-index = "rbi_source_mcp.indexer.build_md_index:main"
 rbi-source-index-all = "rbi_source_mcp.indexer.build_all:main"
