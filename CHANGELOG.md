@@ -4,6 +4,71 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.8.0 — `pip install rbi-source-mcp` + `rbi-source-fetch-corpus` (one-line install)
+
+The headline UX promised in v0.7.0 lands. Self-host is now three lines:
+
+```bash
+uvx rbi-source-mcp                              # 1. install
+rbi-source-fetch-corpus                         # 2. download prebuilt corpus
+# 3. add { "command": "rbi-source-mcp" } to claude_desktop_config.json
+```
+
+**New:**
+- **`rbi-source-fetch-corpus`** — console script that downloads the
+  weekly prebuilt corpus from GitHub Releases. Default tag is
+  `latest-corpus` (moving alias); pin to a `corpus-YYYY-MM-DD-<run_id>`
+  tag for reproducibility. Streams the ~80 MB download with progress
+  indicator, verifies SHA256 (always), optionally verifies the sigstore
+  signature against the GitHub Actions OIDC identity (`--verify-sigstore`,
+  requires `pip install 'rbi-source-mcp[verify]'`), confirms
+  `corpus_meta.schema_version` matches the running package, atomically
+  installs to `$RBI_SOURCE_DB` or `~/.local/share/rbi-source-mcp/db.sqlite`.
+  Every failure mode prints PROBLEM + CAUSE + FIX (no more cryptic
+  tracebacks).
+- **`rbi-source-doctor`** — preflight checks for an install. Confirms
+  Python ≥3.11, `sqlite-vec` loads + the `vec0` virtual table works, the
+  corpus exists and has documents, the HuggingFace cache is writable,
+  `torch` imports, the bge-small model is cached. Each check returns
+  OK/WARN/FAIL with a specific fix when something's off. `--json` for
+  machine-readable output, `--quick` to skip slow checks.
+- **`.github/workflows/release.yml`** — publishes `rbi-source-mcp` to
+  PyPI on `v*` tags via trusted publishing (no API token in repo
+  secrets — PyPI verifies the GitHub Actions OIDC identity directly).
+  Verifies pyproject + `__init__.py` versions match the tag before
+  uploading. Sigstore-signs the wheel + sdist and attaches signatures
+  to the GitHub Release.
+- **README rewrite** — Self-host section now leads with the 3-line
+  install, then sigstore verification, then advanced paths (CF, build
+  the corpus yourself, HTTP server, weekly refresh).
+- **`[verify]` extra** in `pyproject.toml` — opt-in `sigstore-python`
+  for `--verify-sigstore`. ~25 MB on disk; most users are fine with
+  SHA256 + transport TLS, so we keep it out of the default install.
+
+**Bug fix carried forward from /review:**
+- `db._stamp_schema_version` now stamps schema_version ONLY when missing,
+  never overwrites. The v0.7.1 implementation overwrote mismatched
+  versions on read, which would have silently masked the schema check
+  in `rbi-source-fetch-corpus`. Build pipeline is responsible for
+  bumping the stamp via explicit `set_meta()` when the schema actually
+  changes.
+
+**Test coverage:**
+- 18 new tests for `fetch_corpus` (happy path, SHA mismatch, 404 release,
+  rate limit, missing asset, schema mismatch, --no-verify-schema,
+  destination resolution) and `doctor` (each check, JSON output).
+- 112 tests total passing, 3 skipped.
+
+**One-time PyPI setup needed before first release:**
+1. Reserve `rbi-source-mcp` on https://pypi.org (manual upload of a
+   placeholder wheel, or upload the first real release manually).
+2. Configure trusted publishing at
+   `https://pypi.org/manage/project/rbi-source-mcp/settings/publishing/`
+   matching the workflow filename (`release.yml`) and environment (`pypi`).
+3. Push a `v0.8.0` tag — `release.yml` will fire and publish.
+
+Documented in the workflow file's header comment block.
+
 ### v0.7.1 — /review fix-up (corpus-release.yml, build_all.py, db.py)
 
 Fix-up release addressing P0/P1 findings from `/review` against v0.7.0.
