@@ -4,6 +4,65 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.7.0 — strip deployment from OSS, ship corpus via GitHub Releases (BREAKING)
+
+The OSS surface gets pared down to "Python package + corpus pipeline that
+publishes to GitHub Releases". Anything Fly/Docker/deploy-flavored leaves
+the public repo. Self-hosters target local stdio + Claude Desktop with a
+prebuilt corpus. Maintainer's hosted instance keeps running with no
+behavior change, but its deploy machinery moves to a private repo.
+
+**BREAKING (no shim, intentional):**
+- `fly.toml`, `Dockerfile`, `docker-compose.yml`, `scripts/qa_live.py`,
+  `scripts/watchdog.py`, `scripts/integration_test_public.py` removed
+  from the public repo. They live in `~/code/rbi-source-mcp-deploy/`
+  on the maintainer's machine.
+- `.github/workflows/refresh.yml` removed; replaced by
+  `corpus-release.yml` which publishes to GitHub Releases instead of
+  pushing to a Fly volume directly.
+- `local-embeddings` extra and the Fly-flavored `Dockerfile` reference
+  any v0.6 self-hoster might have wired into CI will need updating.
+  See README's `## Self-host` section for the v0.7 path.
+
+**New:**
+- **`corpus-release.yml`** — weekly diff (Sundays 02:00 UTC) +
+  monthly full rebuild (1st @ 03:00 UTC). Crawls, indexes, smoke-gates
+  paired (≥80% absolute AND <5pp regression vs prior release),
+  sigstore-signs the corpus, publishes immutable `corpus-<timestamp>`
+  + moving `latest-corpus` GitHub Releases.
+- **`corpus_meta` table + `CORPUS_SCHEMA_VERSION`** in `db.py`. Stamps
+  schema version, embedding model + revision, build timestamp, build
+  commit, build mode on every corpus build. Self-host runtime
+  (`rbi-source-fetch-corpus` in PR2) refuses to install a corpus whose
+  schema_version doesn't match the running package.
+- **Content-hash diff-skip** (autoplan review #3 fix). Indexer's
+  `already_indexed_ids()` now joins `pdf_artifacts.fetched_at` against
+  `documents.last_updated_at` so a list-page bump on an existing MD
+  forces a re-fetch instead of silently keeping stale chunks. Other
+  families (PR, FAQ, master_circular) keep simpler doc-existence skip
+  with comments explaining why; monthly full rebuild catches anything
+  the diff misses.
+- **HuggingFace model revision pinned** via `RBI_LOCAL_MODEL_REVISION`
+  (default `main`; production sets a known-good commit SHA). Prevents
+  silent embedding drift between corpus build and runtime.
+- **Vendor-neutral env vars** — `MCP_INSTANCE_ID` / `MCP_REGION`
+  replace `FLY_MACHINE_ID` / `FLY_REGION` in OSS code. Both Fly env
+  vars stay as transparent fallbacks so the maintainer's deploy keeps
+  working without reconfig.
+- **`deploy-corpus.sh`** in the private deploy repo: pulls latest
+  GitHub Release, verifies SHA256 + sigstore, ships to Fly volume,
+  atomic-renames. The Fly-specific glue that used to live in
+  `refresh.yml` now lives here.
+- **`v0.7+ note`** banner in README's Self-host section pointing at
+  the upcoming `uvx rbi-source-mcp` + `rbi-source-fetch-corpus` flow
+  shipping in v0.7.1 (PR2).
+
+**Reviewed via /autoplan.** CEO + Eng + DX review with Codex + Claude
+subagent. Three user-challenge overrides locked in (bundle bge-small as
+default, hard break with no shim, drop Dockerfile from OSS); 10
+mechanical fixes from the review folded into this PR. Full audit trail
+in `.gstack/plan-local-first.md`.
+
 ### v0.6.2 — anonymous server-side telemetry (hosted instance only)
 
 Adds an optional PostHog integration so the hosted instance at

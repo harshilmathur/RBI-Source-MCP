@@ -112,6 +112,11 @@ def run_bulk(*, db_path: Path | None = None, skip_already: bool = True, sleep_be
     init_db(db_path)
     skip_set: set[str] = set()
     if skip_already:
+        # Press releases are issued once and don't change after publication;
+        # doc-existence is a sufficient skip signal. If RBI ever corrects a
+        # typo on an existing PR, the monthly full-rebuild safety net
+        # (corpus-release.yml mode=full) catches it. See autoplan review
+        # finding #2 for the MD-family equivalent of this concern.
         with connect(db_path) as conn:
             rows = conn.execute(
                 "SELECT md_id FROM documents WHERE document_family='press_release'"

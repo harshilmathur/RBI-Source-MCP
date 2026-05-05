@@ -13,8 +13,9 @@ Schema:
     chunks_vec         -- sqlite-vec virtual table, 384-dim float32 (dense)
     pdf_artifacts      -- audit trail of PDF fetches and extractions
 
-The DB file is rebuilt by the weekly GitHub Action and atomic-swapped onto
-the live Fly volume.
+The DB file is rebuilt by the weekly GitHub Action and either downloaded
+by self-hosters via `rbi-source-fetch-corpus` or atomic-swapped onto a
+hosted instance's data volume.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import structlog
@@ -192,7 +194,26 @@ CREATE TABLE IF NOT EXISTS pdf_artifacts (
     extracted_at     TEXT,
     error            TEXT
 );
+
+-- v0.7: corpus metadata kv table. Used for schema version, embedding model
+-- identity, build timestamps, etc. The schema_version row gates downstream
+-- consumers (rbi-source-fetch-corpus refuses on mismatch with the running
+-- package's expected version) so a v0.7 install can never silently read a
+-- v0.8 corpus that has new columns / new tables / different embed dim.
+CREATE TABLE IF NOT EXISTS corpus_meta (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
+
+# Bump this whenever the corpus shape changes in a way that breaks an
+# older runtime: new required column, new table the runtime SELECTs from,
+# embedding dimension change, FTS/vec rebuild required, etc. The fetch
+# script refuses to install a corpus whose schema_version doesn't match.
+# Kept short — gets embedded in the GitHub Release artifact filename via
+# the corpus-release.yml workflow.
+CORPUS_SCHEMA_VERSION = "1"
 
 # v0.5: chunks_vec virtual table for dense embeddings. We create it
 # separately because virtual-table DDL requires the extension to be loaded.
@@ -226,6 +247,7 @@ def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
     try:
         conn.executescript(SCHEMA_SQL)
         _migrate_schema(conn)
+        _stamp_schema_version(conn)
         # Try to load sqlite-vec and create the virtual table. Both are
         # idempotent and silent on failure (logs a warning).
         if _load_sqlite_vec(conn):
@@ -436,6 +458,45 @@ def init_db(db_path: str | Path) -> None:
     with connect(db_path):
         pass
     logger.info("db.init", path=str(db_path))
+
+
+# ---------------------------------------------------------------------------
+# corpus_meta helpers (v0.7+)
+#
+# A tiny KV table for corpus-level facts that the runtime needs to verify
+# before reading: schema version, embedding model identity, build timestamp,
+# build commit. Used by `rbi-source-fetch-corpus` (PR2) to refuse mismatches
+# rather than silently misbehave on a corpus newer/older than this runtime.
+# ---------------------------------------------------------------------------
+
+
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Upsert a corpus_meta row. Stamps `updated_at` to now (UTC, ISO 8601)."""
+    now = datetime.utcnow().isoformat() + "Z"
+    conn.execute(
+        """
+        INSERT INTO corpus_meta (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        (key, value, now),
+    )
+
+
+def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    """Return the value for `key`, or None if not present."""
+    row = conn.execute("SELECT value FROM corpus_meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def _stamp_schema_version(conn: sqlite3.Connection) -> None:
+    """Write the current CORPUS_SCHEMA_VERSION on every open.
+
+    Idempotent: same value → no-op. Bump the constant in this module when a
+    schema change breaks runtime backward-compat; existing corpora carrying
+    an older value will need a rebuild.
+    """
+    set_meta(conn, "schema_version", CORPUS_SCHEMA_VERSION)
 
 
 # ---------------------------------------------------------------------------

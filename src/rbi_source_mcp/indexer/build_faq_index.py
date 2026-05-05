@@ -122,6 +122,10 @@ def run_bulk(*, db_path: Path | None = None, skip_already: bool = True, sleep_be
     init_db(db_path)
     skip_set: set[str] = set()
     if skip_already:
+        # FAQ pages don't carry a reliable last_updated_at signal in the
+        # list-page HTML, so we keep the simpler doc-existence skip. If
+        # RBI updates a Q&A on an existing FAQ topic, the monthly full
+        # rebuild (corpus-release.yml mode=full) picks it up.
         with connect(db_path) as conn:
             rows = conn.execute("SELECT md_id FROM documents WHERE document_family='faq'")
             skip_set = {r[0] for r in rows}

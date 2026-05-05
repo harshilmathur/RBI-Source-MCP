@@ -1,0 +1,295 @@
+name: Weekly corpus release
+
+# Pipeline (v0.7+):
+#   1. Seed staging DB from the previous corpus release (diff mode only)
+#      so the indexers can skip unchanged PDFs via the content-hash JOIN
+#      in build_all.py:already_indexed_ids().
+#   2. Crawl RBI list pages → upsert into the staging DB.
+#   3. Run all five indexers — fetches changed PDFs, extracts text,
+#      chunks, embeds via Cloudflare Workers AI (bge-base @ 768-dim).
+#   4. Stamp corpus_meta with build provenance (commit, timestamp,
+#      embedding model + revision, schema version).
+#   5. Smoke gate paired: rbi-source-eval ≥80% absolute AND <5pp drop
+#      vs the previous release's pass rate.
+#   6. On smoke pass: compress with xz, sigstore-sign, publish as a
+#      GitHub Release asset. Self-hosters consume via
+#      `rbi-source-fetch-corpus`; the maintainer's hosted instance pulls
+#      via the deploy-corpus.sh script in the private deploy repo.
+#   7. On smoke fail: abort, upload artifact for inspection, no release.
+#
+# Cost: ~$0 in diff mode (~50 CF Neurons/week; quota is 10k/day free).
+# Full mode (monthly safety net) is ~3000 Neurons, still well under cap.
+#
+# This workflow REPLACES the old refresh.yml which atomic-renamed onto a
+# Fly volume directly. The Fly piece is now operator-side: a deploy
+# script in the private repo downloads the latest GitHub Release artifact
+# and ships it to the volume. OSS users never touch Fly.
+
+on:
+  schedule:
+    - cron: "0 2 * * 0"           # weekly diff (Sundays 02:00 UTC)
+    - cron: "0 3 1 * *"           # monthly full rebuild (1st @ 03:00 UTC)
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        description: "Build mode"
+        options: [diff, full]
+        default: diff
+
+permissions:
+  contents: write          # required to create the GitHub Release
+  id-token: write          # required for sigstore OIDC signing
+  actions: read
+
+concurrency:
+  group: corpus-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      RBI_EMBEDDING_PROVIDER: cloudflare
+      RBI_EMBEDDING_MODEL: "@cf/baai/bge-base-en-v1.5"
+      RBI_EMBEDDING_DIM: "768"
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      RBI_SOURCE_DB_NEW: ${{ github.workspace }}/data/db.sqlite.new
+      RBI_SOURCE_DB: ${{ github.workspace }}/data/db.sqlite.new
+      # Determine effective mode: scheduled monthly (cron 0 3 1 * *) → full,
+      # scheduled weekly → diff, manual → use the input.
+      BUILD_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '0 3 1 * *' && 'full' || 'diff') }}
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install poppler-utils + xz + sqlite3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils sqlite3 xz-utils
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # ─────────────────────────────────────────────────────────────
+      # Diff-mode pre-stage: download the previous release's corpus so
+      # build_all.py:already_indexed_ids() skips unchanged PDFs via the
+      # content-hash JOIN. Full-mode skips this — empty staging DB =
+      # full rebuild, catches silent RBI re-uploads.
+      # ─────────────────────────────────────────────────────────────
+      - name: Seed staging DB from latest release (diff mode)
+        if: env.BUILD_MODE != 'full'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data
+          if gh release view latest-corpus --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download latest-corpus \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern 'corpus.sqlite.xz' \
+              --output - \
+              | xz -d > "$RBI_SOURCE_DB_NEW"
+            echo "::notice::seeded staging from latest-corpus ($(stat -c%s "$RBI_SOURCE_DB_NEW") bytes)"
+          else
+            echo "::notice::no prior release found — first build, full crawl will run"
+          fi
+
+      - name: Crawl RBI list pages
+        run: |
+          mkdir -p data
+          rbi-source-crawl
+
+      - name: Verify list-page crawl is non-empty (early gate)
+        run: |
+          MD_COUNT=$(sqlite3 "$RBI_SOURCE_DB_NEW" "SELECT count(*) FROM documents WHERE document_family='master_direction';")
+          WD_COUNT=$(sqlite3 "$RBI_SOURCE_DB_NEW" "SELECT count(*) FROM withdrawn;")
+          echo "Master Directions: $MD_COUNT"
+          echo "Withdrawn circulars: $WD_COUNT"
+          if [ "$MD_COUNT" -lt 30 ]; then
+            echo "::error::Suspicious: only $MD_COUNT MDs crawled (expected ~80+). Aborting before indexing."
+            exit 1
+          fi
+          if [ "$WD_COUNT" -lt 5 ]; then
+            echo "::error::Suspicious: only $WD_COUNT withdrawn circulars crawled. Aborting before indexing."
+            exit 1
+          fi
+
+      - name: Diff summary (what's new/updated/skip)
+        run: |
+          sqlite3 -header -column "$RBI_SOURCE_DB_NEW" "
+            SELECT
+              SUM(CASE WHEN pa.md_id IS NULL THEN 1 ELSE 0 END) AS new_mds,
+              SUM(CASE WHEN pa.md_id IS NOT NULL AND (d.last_updated_at IS NOT NULL AND pa.fetched_at < d.last_updated_at) THEN 1 ELSE 0 END) AS updated_mds,
+              SUM(CASE WHEN pa.is_indexed = 1 AND (d.last_updated_at IS NULL OR pa.fetched_at >= d.last_updated_at) THEN 1 ELSE 0 END) AS skip_mds
+            FROM documents d
+            LEFT JOIN pdf_artifacts pa USING(md_id)
+            WHERE d.document_family='master_direction';
+          "
+
+      - name: Index Master Directions
+        run: |
+          if [ "$BUILD_MODE" = "full" ]; then
+            rbi-source-index-all --force
+          else
+            rbi-source-index-all
+          fi
+
+      - name: Index Circulars
+        run: rbi-source-index-all-circulars
+
+      - name: Index Press Releases
+        run: rbi-source-index-press-release --bulk
+
+      - name: Index FAQs
+        run: rbi-source-index-faq --bulk
+
+      - name: Index Master Circulars
+        run: rbi-source-index-master-circular --bulk
+
+      # ─────────────────────────────────────────────────────────────
+      # Stamp corpus_meta with build provenance so
+      # `rbi-source-fetch-corpus` (PR2) can verify schema/embed compat
+      # before installing.
+      # ─────────────────────────────────────────────────────────────
+      - name: Stamp corpus metadata
+        run: |
+          BUILD_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          python -c "
+          from rbi_source_mcp.db import connect, set_meta
+          import os
+          db = os.environ['RBI_SOURCE_DB_NEW']
+          with connect(db) as c:
+              set_meta(c, 'embedding_model',     '${{ env.RBI_EMBEDDING_MODEL }}')
+              set_meta(c, 'embedding_dim',       '${{ env.RBI_EMBEDDING_DIM }}')
+              set_meta(c, 'embedding_revision',  os.environ.get('RBI_LOCAL_MODEL_REVISION', 'main'))
+              set_meta(c, 'build_timestamp',     '$BUILD_TS')
+              set_meta(c, 'build_commit',        '${{ github.sha }}')
+              set_meta(c, 'build_mode',          '${{ env.BUILD_MODE }}')
+          print('corpus_meta stamped')
+          "
+
+      # ─────────────────────────────────────────────────────────────
+      # Smoke gate paired: ≥80% absolute AND <5pp drop from prior
+      # release. Drop-detection prevents a regressed corpus shipping
+      # silently when it still clears the absolute threshold (e.g.,
+      # 95% → 81% would pass the absolute gate but break users).
+      # ─────────────────────────────────────────────────────────────
+      - name: Smoke gate (absolute ≥80% AND <5pp regression)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Absolute gate
+          rbi-source-eval --threshold 0.80 --json > eval-current.json
+          CURRENT_PCT=$(jq -r '.hit_rate' eval-current.json)
+          echo "Current pass rate: $CURRENT_PCT"
+
+          # Regression gate (only if we have a prior release to compare to)
+          if gh release view latest-corpus --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if gh release download latest-corpus \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --pattern 'eval.json' \
+                 --output eval-prior.json 2>/dev/null; then
+              PRIOR_PCT=$(jq -r '.hit_rate' eval-prior.json)
+              DROP=$(python -c "print(round((float('$PRIOR_PCT') - float('$CURRENT_PCT')) * 100, 2))")
+              echo "Prior pass rate: $PRIOR_PCT (drop: ${DROP} pp)"
+              if python -c "import sys; sys.exit(0 if float('$DROP') < 5.0 else 1)"; then
+                echo "::notice::regression gate passed (drop ${DROP}pp < 5pp)"
+              else
+                echo "::error::regression gate failed: drop of ${DROP}pp exceeds 5pp threshold"
+                exit 1
+              fi
+            else
+              echo "::notice::no eval.json on prior release — regression gate skipped"
+            fi
+          else
+            echo "::notice::no prior release — regression gate skipped (first build)"
+          fi
+
+      # ─────────────────────────────────────────────────────────────
+      # Compress + sign + publish.
+      # ─────────────────────────────────────────────────────────────
+      - name: Compress corpus
+        run: |
+          # xz -9 -T 0 = max compression, multi-threaded. ~252MB → ~80MB.
+          xz -9 -T 0 -k "$RBI_SOURCE_DB_NEW"
+          mv "$RBI_SOURCE_DB_NEW".xz corpus.sqlite.xz
+          sha256sum corpus.sqlite.xz > corpus.sqlite.xz.sha256
+          ls -lh corpus.sqlite.xz corpus.sqlite.xz.sha256
+
+      - name: Sign corpus assets with sigstore
+        # OIDC-issued (no API key in repo). Verifiable by anyone with
+        # `cosign verify-blob` or `sigstore-python`.
+        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        with:
+          inputs: |
+            corpus.sqlite.xz
+            corpus.sqlite.xz.sha256
+
+      - name: Publish timestamped GitHub Release
+        # Immutable timestamped tag = rollback target. The `latest-corpus`
+        # alias gets updated separately below.
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: corpus-${{ github.run_started_at }}
+          name: "Corpus build ${{ github.run_started_at }}"
+          body: |
+            Weekly corpus build (mode: `${{ env.BUILD_MODE }}`).
+
+            - schema_version: 1
+            - embedding_model: ${{ env.RBI_EMBEDDING_MODEL }} @ ${{ env.RBI_EMBEDDING_DIM }}-dim
+            - build_commit: ${{ github.sha }}
+
+            Self-hosters: `rbi-source-fetch-corpus` (v0.7+) downloads this automatically.
+          files: |
+            corpus.sqlite.xz
+            corpus.sqlite.xz.sha256
+            corpus.sqlite.xz.sigstore
+            corpus.sqlite.xz.sha256.sigstore
+            eval-current.json
+          generate_release_notes: false
+
+      - name: Update `latest-corpus` moving alias
+        # The fetch script defaults to `latest-corpus` for convenience.
+        # Operators who want immutability pin to the timestamped tag.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete + recreate the alias tag pointing at the latest assets.
+          gh release delete latest-corpus --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest-corpus \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Latest corpus (alias)" \
+            --notes "Moving alias for the latest corpus build. Pin to a timestamped tag for immutability." \
+            corpus.sqlite.xz \
+            corpus.sqlite.xz.sha256 \
+            corpus.sqlite.xz.sigstore \
+            corpus.sqlite.xz.sha256.sigstore \
+            eval-current.json
+          # Rename eval-current.json → eval.json on the alias for the
+          # next run's regression-gate lookup.
+          mv eval-current.json eval.json
+          gh release upload latest-corpus eval.json --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Upload corpus artifact (workflow run, 30d retention)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rbi-corpus-${{ github.run_id }}
+          path: |
+            data/db.sqlite.new
+            corpus.sqlite.xz
+            corpus.sqlite.xz.sha256
+            eval-current.json
+          retention-days: 30

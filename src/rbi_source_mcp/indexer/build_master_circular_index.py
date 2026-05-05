@@ -100,6 +100,10 @@ def run_bulk(*, db_path: Path | None = None, skip_already: bool = True, sleep_be
     init_db(db_path)
     skip_set: set[str] = set()
     if skip_already:
+        # Master Circulars are re-issued yearly with new mc_ids, so the
+        # doc-existence skip rarely misfires. Within a year a Master
+        # Circular doesn't get amended; if it ever does, the monthly full
+        # rebuild (corpus-release.yml mode=full) catches it.
         with connect(db_path) as conn:
             rows = conn.execute("SELECT md_id FROM documents WHERE document_family='master_circular'")
             skip_set = {r[0] for r in rows}

@@ -42,7 +42,7 @@ logger = structlog.get_logger(__name__)
 DEFAULT_DB_PATH = "./data/db.sqlite"
 
 # Hard cap on user-supplied free-text fields (`text` for check_compliance,
-# `query` for search, etc.). The MCP server runs single-process on Fly; a
+# `query` for search, etc.). The MCP server runs single-process; a
 # multi-megabyte payload spent inside the embedder or FTS5 tokenizer would
 # block the asyncio event loop and starve other clients. 32 KB is plenty
 # for a clause-level compliance check (the README explicitly recommends
