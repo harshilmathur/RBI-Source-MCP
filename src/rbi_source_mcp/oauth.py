@@ -10,7 +10,7 @@ enforce — but the protocol still requires the endpoints to exist.
 This module implements the minimum needed to satisfy the discovery walk:
 auto-approving authorization, dynamic client registration that accepts
 anyone, and PKCE-validated token exchange. Tokens are stored in-process
-(single Fly machine; rebuilds on every deploy are fine — clients
+(single-machine deployment; rebuilds on every deploy are fine — clients
 re-register transparently).
 
 Backward compatibility: /mcp/ is NOT gated on the bearer token. Clients

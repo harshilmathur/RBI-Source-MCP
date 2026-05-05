@@ -60,11 +60,26 @@ def run(
     init_db(db_path)
     skip_set: set[str] = set()
     if skip_already_indexed:
+        # v0.7 tightening: join pdf_artifacts.fetched_at vs
+        # documents.last_updated_at so a list-page bump on an existing
+        # circular forces a re-fetch instead of silently keeping stale
+        # chunks. Most circulars don't carry a meaningful last_updated_at
+        # (they're issued once, not re-issued), so the OR-IS-NULL branch
+        # preserves the current "skip if indexed" behavior for them. The
+        # monthly full-rebuild safety net (corpus-release.yml mode=full)
+        # catches silent RBI re-uploads.
         with connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT md_id FROM chunks
-                WHERE md_id IN (SELECT md_id FROM documents WHERE document_family IN ('standalone_circular','notification'))
+                SELECT DISTINCT pa.md_id
+                FROM pdf_artifacts pa
+                JOIN documents d ON d.md_id = pa.md_id
+                WHERE pa.is_indexed = 1
+                  AND d.document_family IN ('standalone_circular','notification')
+                  AND (
+                      d.last_updated_at IS NULL
+                      OR pa.fetched_at >= d.last_updated_at
+                  )
                 """
             )
             skip_set = {r[0] for r in rows}

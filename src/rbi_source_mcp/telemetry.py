@@ -1,8 +1,8 @@
-"""Optional PostHog telemetry for the hosted instance.
+"""Optional PostHog telemetry for hosted instances.
 
 Off by default. Activates only when `POSTHOG_API_KEY` is set in the env —
-the hosted Fly deploy sets this; self-hosters do not. Self-host OSS installs
-never phone home.
+the maintainer's hosted instance sets this; self-host OSS installs never
+phone home unless the operator opts in.
 
 What we capture (hosted only):
     - tool name (rbi_search / rbi_check_compliance / rbi_get_document / rbi_check_current)
@@ -11,11 +11,11 @@ What we capture (hosted only):
     - error_type (exception class name, when status=error)
     - shape-only properties: limit, has_filters, include_text, topic_hint enum value,
       text_length_bucket, query_length_bucket
-    - server version, fly machine id (when present)
+    - server version, instance id (MCP_INSTANCE_ID or FLY_MACHINE_ID, when present)
 
 What we do NOT capture:
     - query text, clause text, document IDs, response bodies, URLs from rbi_check_current,
-    - IP, user-agent, or any client identifier beyond the Fly machine id of the server itself.
+    - IP, user-agent, or any client identifier beyond the server's own instance id.
 
 The module is structured so that when `POSTHOG_API_KEY` is unset:
     - posthog is never imported (it's not in pyproject.toml deps)
@@ -23,10 +23,12 @@ The module is structured so that when `POSTHOG_API_KEY` is unset:
     - zero allocations, zero network, zero log noise
 
 Distinct ID strategy:
-    Anonymous events. We use the Fly machine id (or a per-process UUID fallback)
-    as the distinct_id and pass `$process_person_profile: false` so PostHog does
-    NOT build user profiles. The dashboard treats events as anonymous server
-    activity. We are counting tool calls and tracking error/latency, not users.
+    Anonymous events. We use the server instance id (MCP_INSTANCE_ID, falling back
+    to FLY_MACHINE_ID for the Fly-hosted maintainer instance, or a per-process UUID
+    when neither is set) as the distinct_id and pass `$process_person_profile: false`
+    so PostHog does NOT build user profiles. The dashboard treats events as
+    anonymous server activity. We are counting tool calls and tracking
+    error/latency, not users.
 """
 
 from __future__ import annotations
@@ -115,10 +117,17 @@ def _init_once() -> None:
         _client = None
         return
 
-    # Stable per-instance ID. Using FLY_MACHINE_ID groups events from the same
-    # VM; on multi-machine fleets this gives a coarse host breakdown without
-    # leaking anything client-side.
-    _distinct_id = os.environ.get("FLY_MACHINE_ID") or f"local-{uuid.uuid4().hex[:12]}"
+    # Stable per-instance ID. We prefer MCP_INSTANCE_ID (vendor-neutral) so
+    # operators on any platform can group events from the same VM/machine.
+    # FLY_MACHINE_ID is kept as a transparent fallback so existing Fly-hosted
+    # deployments don't have to change anything to keep the same distinct_id
+    # they had before v0.7.0. Falls back to a per-process random UUID with a
+    # `local-` prefix when neither is set (typical for laptop self-hosts).
+    _distinct_id = (
+        os.environ.get("MCP_INSTANCE_ID")
+        or os.environ.get("FLY_MACHINE_ID")
+        or f"local-{uuid.uuid4().hex[:12]}"
+    )
     logger.info("telemetry_enabled", host=host, distinct_id=_distinct_id)
 
 
@@ -149,9 +158,12 @@ def capture_tool_call(
         # Tell PostHog not to build user profiles — these are anonymous server events.
         "$process_person_profile": False,
     }
-    fly_region = os.environ.get("FLY_REGION")
-    if fly_region:
-        props["fly_region"] = fly_region
+    # Region: prefer MCP_REGION (vendor-neutral); fall back to FLY_REGION for
+    # back-compat with the Fly-hosted instance. Either populates the same
+    # `region` property in PostHog so dashboards don't need to know the source.
+    region = os.environ.get("MCP_REGION") or os.environ.get("FLY_REGION")
+    if region:
+        props["region"] = region
     if properties:
         props.update(properties)
 

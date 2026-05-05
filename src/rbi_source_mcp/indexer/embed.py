@@ -51,9 +51,15 @@ def _get_local_model() -> SentenceTransformer:
     if _local_model is None:
         from sentence_transformers import SentenceTransformer
 
-        logger.info("embed.local.load", model=MODEL_NAME)
-        _local_model = SentenceTransformer(MODEL_NAME)
-        logger.info("embed.local.ready", dim=EMBEDDING_DIM)
+        # Pin the HF revision so a future model update on HuggingFace can't
+        # silently change embeddings out from under an existing corpus. The
+        # default ("main") tracks latest; production builds set
+        # `RBI_LOCAL_MODEL_REVISION` to a known-good commit SHA. See
+        # embedding_config.LOCAL_MODEL_REVISION for how to retrieve it.
+        revision = cfg.LOCAL_MODEL_REVISION
+        logger.info("embed.local.load", model=MODEL_NAME, revision=revision)
+        _local_model = SentenceTransformer(MODEL_NAME, revision=revision)
+        logger.info("embed.local.ready", dim=EMBEDDING_DIM, revision=revision)
     return _local_model
 
 

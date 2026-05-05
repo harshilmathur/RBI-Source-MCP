@@ -59,34 +59,25 @@ src/rbi_source_mcp/
       └─ runner.py           Eval gate; passes at ≥80%
 
 scripts/                     Ops + research tooling, not shipped in the runtime image.
-  ├─ qa_live.py              Deep QA harness (~50 probes) for the live URL
-  ├─ watchdog.py             Light watchdog (~5 probes) safe to run from cron
   ├─ reembed_to_bge_base.py  Corpus re-embed across providers (A/B testing)
   ├─ eval_dump.py + compare_ab.py + compare_3way.py   Embedding-model bake-off
+  (Deploy/QA scripts moved to ~/code/rbi-source-mcp-deploy/ in v0.7.0.)
 
 tests/                       94 unit tests passing, 3 skipped
 data/db.sqlite              ~250 MB at 768-dim; ~810 docs, ~57k chunks (drifts weekly)
-fly.toml + Dockerfile        Hosted-endpoint config; LIVE at https://rbi-source.harshil.ai/mcp/
-                             Image is 89 MB (no torch); runtime uses CF for embeddings.
-.dockerignore                Keeps build context lean; preserves db.sqlite.initial seed
 ```
 
-## Hosted endpoint
+## Hosted endpoint (maintainer's instance — not part of OSS)
 
-Live at `https://rbi-source.harshil.ai/mcp/` (Fly app `rbi-source-mcp`,
-Mumbai, single machine, always-on). Custom domain via Cloudflare DNS
-(currently orange-cloud / proxied; the gray-cloud direct option is
-documented but not chosen).
+Live at `https://rbi-source.harshil.ai/mcp/`, Mumbai, single machine,
+always-on. Custom domain via Cloudflare DNS (currently orange-cloud /
+proxied).
 
-- Fly v4 IP: `66.241.124.231` (shared)
-- Fly v6 IP: `2a09:8280:1::10c:e3fc:0` (dedicated)
-- Cert: Let's-Encrypt via Fly (auto-renew). Cloudflare wildcard cert
-  is what end users see when proxy is on.
 - Endpoints: `GET /` (banner), `GET /health` (deep check, 503 on
   empty corpus / sqlite-vec missing degrades to 200 + `degraded: true`),
   `POST /mcp/` (streamable-HTTP).
-- Logs: `fly logs -a rbi-source-mcp`. SSH: `fly ssh console -a rbi-source-mcp`.
-- Redeploy: `fly deploy --ha=false` from repo root.
+- Deploy machinery (fly.toml, Dockerfile, refresh scripts) lives in the
+  private `~/code/rbi-source-mcp-deploy/` repo, not in this OSS tree.
 
 ## Console scripts
 
@@ -197,7 +188,7 @@ quality has regressed and the build should fail. Currently 100% (25/25).
 
 | Area | Status |
 |---|---|
-| Hosted Fly endpoint | ✓ LIVE at `https://rbi-source.harshil.ai/mcp/` |
+| Hosted endpoint (maintainer's, not OSS) | ✓ LIVE at `https://rbi-source.harshil.ai/mcp/` |
 | Custom domain | ✓ rbi-source.harshil.ai via Cloudflare DNS |
 | HTTP transport for hosted mode | ✓ landed — server_http.py + rbi-source-mcp-http console script |
 | Weekly refresh GH Action | Configured but not yet running on schedule |

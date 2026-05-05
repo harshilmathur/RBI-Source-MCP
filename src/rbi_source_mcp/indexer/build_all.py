@@ -60,10 +60,44 @@ def list_md_ids(db_path: Path) -> list[str]:
 
 
 def already_indexed_ids(db_path: Path) -> set[str]:
-    """MDs that have at least one is_indexed=1 PDF artifact."""
+    """MDs whose PDFs we already indexed AND whose list-page hasn't claimed
+    a change since we fetched.
+
+    v0.7 tightening (autoplan review #3): the prior implementation returned
+    every md_id with ANY is_indexed=1 row. When the GHA workflow seeds the
+    staging DB from the previous corpus release, that set covers every MD
+    in the corpus, and an MD whose list-page `last_updated_at` was just
+    bumped by the new crawl pass would be skipped silently — chunks would
+    stay stale forever.
+
+    The fix joins `documents.last_updated_at` (refreshed by the crawler this
+    run) against `pdf_artifacts.fetched_at` (stamped at the previous index
+    pass). We only skip when:
+      - we have at least one indexed pdf_artifacts row for the md_id, AND
+      - either the list page has no `last_updated_at` signal at all
+        (rare; rarely-amended MDs), OR
+      - our `fetched_at` is at-or-after the list page's `last_updated_at`
+        (no claimed change since we last touched the PDF).
+
+    This catches the "list page bumped → re-fetch + re-extract" case while
+    still skipping the no-change case fast (no PDF GET, no extract, no
+    embed). The monthly full rebuild safety net (corpus-release.yml,
+    `mode: full`) catches silent re-uploads RBI does without bumping the
+    list-page date.
+    """
     with connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT DISTINCT md_id FROM pdf_artifacts WHERE is_indexed = 1"
+            """
+            SELECT DISTINCT pa.md_id
+            FROM pdf_artifacts pa
+            JOIN documents d ON d.md_id = pa.md_id
+            WHERE pa.is_indexed = 1
+              AND d.document_family = 'master_direction'
+              AND (
+                  d.last_updated_at IS NULL
+                  OR pa.fetched_at >= d.last_updated_at
+              )
+            """
         ).fetchall()
     return {r["md_id"] for r in rows}
 

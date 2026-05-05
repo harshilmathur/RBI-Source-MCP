@@ -1,9 +1,9 @@
 """Streamable-HTTP transport for the RBI Source MCP server.
 
 The stdio server in `server.py` is what Claude Code / Claude Desktop spawn
-locally. For HOSTED mode (Fly, etc.), we need to speak the streamable-HTTP
-transport so any MCP client can connect via `<HOSTED_URL>/mcp` without
-running a local subprocess.
+locally. For HOSTED mode (cloud platforms behind a reverse proxy), we need
+to speak the streamable-HTTP transport so any MCP client can connect via
+`<HOSTED_URL>/mcp` without running a local subprocess.
 
 This module reuses `_build_server()` from server.py — the tool definitions
 and call dispatch are identical. We only swap the transport.
@@ -87,8 +87,8 @@ def _prewarm_embedder_sync() -> None:
        partially initialized module numpy._typing' (circular import
        across threads). Running synchronously in the lifespan startup
        eliminates the race; the asyncio loop is single-threaded at this
-       point and no requests are being served yet (Fly's grace_period
-       covers the brief load window).
+       point and no requests are being served yet (any platform's
+       readiness grace_period covers the brief load window).
 
     2. Imports happen inside the function body (after lifespan startup
        has begun) so `rbi-source-mcp-http --help`, --version, etc. don't
@@ -140,12 +140,13 @@ logger = structlog.get_logger(__name__)
 _BANNER_TTL_SECONDS = 60.0
 _banner_cache: dict[str, object] = {"data": None, "ts": 0.0}
 
-# /health cache: Fly's readiness probe hits this every few seconds. The deep
-# health check opens a SQLite connection + verifies sqlite-vec loaded + counts
-# documents — that's ~10ms but adds up at probe cadence and contends with
-# real traffic. 30s cache is short enough that a real outage flips the probe
-# within one Fly health-check window. Separate cache from the banner because
-# the failure shapes differ (banner returns degraded JSON; health flips 503).
+# /health cache: a load balancer / orchestrator readiness probe hits this every
+# few seconds. The deep health check opens a SQLite connection + verifies
+# sqlite-vec loaded + counts documents — that's ~10ms but adds up at probe
+# cadence and contends with real traffic. 30s cache is short enough that a
+# real outage flips the probe within one health-check window. Separate cache
+# from the banner because the failure shapes differ (banner returns degraded
+# JSON; health flips 503).
 _HEALTH_TTL_SECONDS = 30.0
 _health_cache: dict[str, object] = {"data": None, "status_code": 200, "ts": 0.0}
 
@@ -158,12 +159,12 @@ _health_cache: dict[str, object] = {"data": None, "status_code": 200, "ts": 0.0}
 MAX_REQUEST_BODY_BYTES = 200_000
 
 # Per-IP rate limit (fixed window). Public unauthenticated endpoint, no auth,
-# no captcha, single Fly machine — without this, anyone can DoS or
+# no captcha, single-machine deployment — without this, anyone can DoS or
 # cost-amplify the embedder. 60 requests per 60 seconds per IP is generous
 # for legitimate MCP clients (which batch tool calls in conversation), tight
 # enough to make a tight-loop attacker visible. /health and / are excluded
-# (Fly probes hit /health every 30s; banner is curl-friendly). Caught by
-# /cso review (#2, 2026-04-29).
+# (orchestrator probes hit /health every 30s; banner is curl-friendly).
+# Caught by /cso review (#2, 2026-04-29).
 RATE_LIMIT_PER_WINDOW = 60
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 
@@ -235,17 +236,19 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Per-IP fixed-window rate limit. In-memory only — fine on a
-    single-machine Fly deployment. If we ever scale to >1 machine, swap to
-    a Redis-backed limiter (or push the rate-limit decision to Cloudflare).
+    single-machine deployment. If we ever scale to >1 machine, swap to
+    a Redis-backed limiter (or push the rate-limit decision to a CDN edge).
 
-    Excludes `/health` (Fly probes every 30s) and `/` (banner is curl-friendly
-    and should not count against a user's MCP quota).
+    Excludes `/health` (probes hit it every 30s) and `/` (banner is
+    curl-friendly and should not count against a user's MCP quota).
 
-    Real client IP is taken from the `Fly-Client-IP` header when present
-    (Fly sets this; Cloudflare also forwards via `CF-Connecting-IP`), else
-    falls back to the request's peer address. The order matters: behind
-    CF→Fly, the chain is Client → CF → Fly → us, so CF-Connecting-IP is
-    the real client. If we drop CF, Fly-Client-IP becomes authoritative.
+    Real client IP is taken from the proxy headers in priority order:
+    `CF-Connecting-IP` (Cloudflare), `Fly-Client-IP` (Fly proxy),
+    `X-Forwarded-For` (generic). The order matters: behind chained proxies
+    like CF→Fly, the chain is Client → CF → Fly → us, so CF-Connecting-IP
+    is the real client. Other reverse proxies (nginx, Caddy, etc.) populate
+    X-Forwarded-For. Falls back to the request's peer address if no proxy
+    header is set.
     """
 
     def __init__(
@@ -342,7 +345,7 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
 
     Mounts:
         /mcp        — MCP streamable-HTTP endpoint
-        /health     — liveness probe (Fly readiness check)
+        /health     — readiness probe for any orchestrator
         /          — version + family-counts banner (curl-friendly)
     """
     server = _build_server()
@@ -358,18 +361,18 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         async with session_manager.run():
             logger.info("http.lifespan.start", version=__version__)
             # Pre-warm the embedder so the first user request doesn't pay
-            # the cold-start tax. With the bge-small model pre-baked into
-            # the Docker image (HF_HOME=/app/.cache/huggingface), this is
-            # a disk read + load — ~3-8s, not the 75-200s HF download we
-            # used to pay. Synchronous on the asyncio main thread to dodge
-            # a NumPy 2.x circular-import race that hit the previous
-            # to_thread version. Fly's health-check grace_period (30s)
-            # covers the brief block.
+            # the cold-start tax. With the bge-small model pre-cached in
+            # HF_HOME (~/.cache/huggingface or whatever the operator points
+            # the env var at), this is a disk read + load — ~3-8s, not the
+            # 75-200s HF download we used to pay. Synchronous on the asyncio
+            # main thread to dodge a NumPy 2.x circular-import race that hit
+            # the previous to_thread version. Any orchestrator's readiness
+            # grace_period (>=10s) covers the brief block.
             _prewarm_embedder_sync()
             yield
             # Flush queued PostHog events before shutdown so the last
             # batch on a deploy doesn't get dropped. No-op when telemetry
-            # is disabled (every self-host install).
+            # is disabled (the default for every self-host install).
             try:
                 from . import telemetry
 
@@ -383,10 +386,10 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         await session_manager.handle_request(scope, receive, send)
 
     async def health(_: Request) -> JSONResponse:
-        """Readiness probe used by Fly + load balancers.
+        """Readiness probe used by load balancers + orchestrators.
 
         A bare process-up check isn't enough: the most common deploy failure
-        mode is the Fly volume not mounting (or mounting empty), in which
+        mode is the data volume not mounting (or mounting empty), in which
         case the process is happily alive but every real request hits an
         empty SQLite. With only a process check the deploy goes green; users
         only learn it's broken when the first /mcp call returns errors.
@@ -399,9 +402,9 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
              retrieval falls back to FTS5-only).
 
         Result is cached for 30s so probe cadence doesn't thrash the DB.
-        Returns 503 on hard-failure (no DB / no documents) so Fly removes
-        the machine from the LB; returns 200 with `degraded: true` if only
-        sqlite-vec is missing.
+        Returns 503 on hard-failure (no DB / no documents) so the
+        orchestrator removes the machine from the LB; returns 200 with
+        `degraded: true` if only sqlite-vec is missing.
         """
         now = time.time()
         cached_data = _health_cache["data"]
@@ -428,9 +431,9 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
             status_code = 503
         else:
             if doc_count == 0:
-                # Volume mounted empty, or weekly refresh hasn't run yet.
-                # Either way: we'd fail every real request — flip 503 so Fly
-                # doesn't route to us.
+                # Volume mounted empty, or the weekly refresh hasn't run
+                # yet. Either way: we'd fail every real request — flip 503
+                # so the orchestrator doesn't route to us.
                 payload.update(
                     {
                         "status": "unhealthy",
@@ -689,13 +692,13 @@ def main() -> None:
     parser.add_argument(
         "--host",
         default=os.environ.get("RBI_SOURCE_HOST", "127.0.0.1"),
-        help="Bind host (default 127.0.0.1; use 0.0.0.0 for hosted/Fly).",
+        help="Bind host (default 127.0.0.1; use 0.0.0.0 for any cloud/reverse-proxy deployment).",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=int(os.environ.get("PORT", os.environ.get("RBI_SOURCE_PORT", "8080"))),
-        help="Bind port (default 8080; honors $PORT for Fly).",
+        help="Bind port (default 8080; honors $PORT — common convention on cloud platforms).",
     )
     parser.add_argument(
         "--reload",

@@ -50,8 +50,16 @@ raw_pdfs/
 .DS_Store
 Thumbs.db
 
-# Fly
+# Fly + deployment-specific files (moved to private deploy repo at
+# ~/code/rbi-source-mcp-deploy/). v0.7.0 strips deployment from OSS surface;
+# self-hosters use stdio + prebuilt corpus, no Docker/Fly required.
 .fly/
+fly.toml
+Dockerfile
+docker-compose.yml
+scripts/qa_live.py
+scripts/watchdog.py
+scripts/integration_test_public.py
 
 # gstack local artifacts (security reports, learnings)
 .gstack/

@@ -1,6 +1,6 @@
 [project]
 name = "rbi-source-mcp"
-version = "0.6.2"
+version = "0.7.0"
 description = "An MCP server for RBI Master Directions: version-aware, citation-first, knows what's withdrawn."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,7 +22,8 @@ classifiers = [
 dependencies = [
     # MCP server
     "mcp>=1.0.0",
-    # Crawling + Cloudflare Workers AI HTTP calls (embeddings)
+    # Crawling + HTTP calls (used by the optional Cloudflare Workers AI
+    # provider too)
     "httpx>=0.27.0",
     "beautifulsoup4>=4.12.0",
     "lxml>=5.0.0",
@@ -32,25 +33,22 @@ dependencies = [
     "numpy>=1.26.0",
     # Logging
     "structlog>=24.0.0",
-]
-
-# v0.6: production embeds via Cloudflare Workers AI (provider=cloudflare in
-# embedding_config.py). The runtime image only needs httpx for that — no
-# torch, no model download, no GPU. Local devs who want on-device embeds
-# opt into the heavy deps via:
-#     uv sync --extra local-embeddings
-# Pulls sentence-transformers + torch (~3 GB). The Fly image deliberately
-# doesn't bundle this so deploys stay fast.
-[project.optional-dependencies]
-local-embeddings = [
-    # bge-small-en-v1.5 via sentence-transformers. ~135 MB model download on
-    # first use, cached locally. Pulls torch as a transitive dep.
+    # v0.7.0: sentence-transformers + torch are now bundled as main deps so
+    # `pip install rbi-source-mcp` works zero-config for local stdio users —
+    # no Cloudflare account required. Pulls CPU-only torch (~250 MB on disk),
+    # downloads bge-small-en-v1.5 (~135 MB) on first use to ~/.cache/huggingface.
+    # Operators who don't want torch on the box can set
+    # RBI_EMBEDDING_PROVIDER=cloudflare and the local model never loads.
+    # Autoplan UC1 review: user accepted the install-size trade for the
+    # zero-config-no-CF-account UX. See .gstack/plan-local-first.md.
     "sentence-transformers>=3.0.0",
 ]
-# v0.6.2: optional anonymous server-side telemetry for the hosted Fly
-# deploy. PostHog Python SDK only — does NOT activate unless POSTHOG_API_KEY
-# is set in the env. Self-host installs skip this extra by default and
-# never phone home. The Fly Docker image installs it via --extra hosted.
+
+[project.optional-dependencies]
+# v0.6.2: optional anonymous server-side telemetry for the maintainer's
+# hosted instance. PostHog Python SDK only — does NOT activate unless
+# POSTHOG_API_KEY is set in the env. Self-host installs skip this extra
+# by default and never phone home.
 hosted = [
     "posthog>=3.0.0",
 ]

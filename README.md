@@ -43,7 +43,7 @@ The hosted endpoint is live and free to use:
 https://rbi-source.harshil.ai/mcp/
 ```
 
-Public, unauthenticated, retrieval-only. Single Fly machine in Mumbai. Every response carries the mandatory legal disclaimer.
+Public, unauthenticated, retrieval-only. Hosted by the maintainer in Mumbai. Every response carries the mandatory legal disclaimer.
 
 > Try it without installing anything:
 > ```bash
@@ -161,65 +161,60 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
 ## Architecture
 
 ```
-   Fly machine (rbi-source-mcp, bom region, always-on)
-   ────────────────────────────────────────────────────
-   shared-cpu-1x, 1 GB RAM, 1 GB volume, single rolling-restart
-   /data/db.sqlite       FTS5 + sqlite-vec, atomic-swap on refresh
-   /data/db-prev.sqlite  one-command rollback target
-   custom domain         rbi-source.harshil.ai (Cloudflare DNS)
+   Runtime (single-process Python, any Linux/macOS host)
+   ──────────────────────────────────────────────────────
+   ./data/db.sqlite      FTS5 + sqlite-vec, atomic-swap on refresh
+   ./data/db-prev.sqlite one-command rollback target
 
-   Image: 89 MB (no torch, no resident model). Cold-boot embedder
-   prewarm: ~1s. Query embedding via Cloudflare Workers AI over HTTPS
-   (~250ms/call), with a 10K-entry process-local LRU cache so repeat
-   queries skip the round-trip entirely.
+   Default embedding path: bge-small-en-v1.5 in-process via
+   sentence-transformers (~135 MB model on disk, ~3-8s cold load,
+   ~50-100ms per query). With a 10K-entry process-local LRU cache,
+   repeat queries skip the cost entirely.
 
-   Public surface
-   ──────────────
+   Optional Cloudflare Workers AI path: bge-base-en-v1.5 @ 768-dim,
+   ~250ms/call over HTTPS. Picked via RBI_EMBEDDING_PROVIDER=cloudflare.
+
+   HTTP-mode public surface (rbi-source-mcp-http)
+   ──────────────────────────────────────────────
    GET  /             homepage HTML (browsers) / corpus banner JSON (clients)
    GET  /health       deep liveness probe (counts docs, re-checks
                       sqlite-vec, surfaces query_cache hit/miss stats)
    POST /mcp/         MCP streamable-HTTP transport
    *    OAuth 2.1     RFC 8414, 9728, 7591 ceremonial endpoints
 
-   Weekly GitHub Action (Sundays 02:00 UTC)
-   ─────────────────────────────────────────
-   crawl 5 families → hash-gate → re-extract changed PDFs
-   → embed via Cloudflare Workers AI (`@cf/baai/bge-base-en-v1.5`, 768-dim)
+   Weekly corpus build (GitHub Actions, Sundays 02:00 UTC)
+   ────────────────────────────────────────────────────────
+   crawl 5 families → diff via content-hash → re-extract changed PDFs
+   → embed (CF Workers AI in CI; bge-base @ 768-dim)
    → build new SQLite (FTS5 + chunks_vec virtual table)
-   → smoke test (rbi-source-eval, must hit ≥80%)
-   → if PASS: sftp to Fly volume → size-verify → atomic rename
-              (server keeps old fd open; new connections see fresh DB)
-   → if FAIL: abort, upload artifact for inspection, live DB untouched
+   → smoke gate (rbi-source-eval, ≥80% absolute AND <5pp regression)
+   → publish corpus.sqlite.xz as a GitHub Release asset (sigstore-signed)
 ```
 
 ## Self-host
 
 Don't want the hosted endpoint? Fork the repo and run your own copy.
 
+> **v0.7+ note:** PR2 (next release) ships `uvx rbi-source-mcp` + `rbi-source-fetch-corpus` for one-command install with a prebuilt corpus from GitHub Releases. The instructions below crawl-and-build locally, which is the v0.7 advanced path.
+
 You have two paths for embeddings, controlled by env vars (see `src/rbi_source_mcp/embedding_config.py`):
 
-- **Cloud (default for production)**: Cloudflare Workers AI. Free tier covers a weekly 56k-chunk corpus build + thousands of queries. Runtime image stays small (~90 MB), no torch.
-- **Local**: `sentence-transformers` (bge-small-en-v1.5 @ 384-dim) running in-process. Pulls torch (~3 GB install) and downloads the model (~135 MB) on first use. No external API calls.
+- **Local (default)**: `sentence-transformers` (bge-small-en-v1.5 @ 384-dim) running in-process. ~135 MB model download on first use, cached at `~/.cache/huggingface/hub/`. No API keys.
+- **Cloud**: Cloudflare Workers AI. Free tier covers a weekly 56k-chunk corpus build + thousands of queries. No torch on the box.
 
 ```bash
 git clone https://github.com/harshilmathur/RBI-Source-MCP.git
 cd RBI-Source-MCP
+uv sync                                              # core deps + sentence-transformers (bundled in v0.7)
 
-# === Option A — local embeddings (no API keys needed) ===
-uv sync --extra local-embeddings
+# Optional: switch to Cloudflare instead of local embeddings
+# export RBI_EMBEDDING_PROVIDER=cloudflare
+# export RBI_EMBEDDING_MODEL=@cf/baai/bge-base-en-v1.5
+# export RBI_EMBEDDING_DIM=768
+# export CF_ACCOUNT_ID=...                           # https://dash.cloudflare.com → Account ID
+# export CF_API_TOKEN=...                            # https://dash.cloudflare.com/profile/api-tokens → "Workers AI: Read"
 
-# === Option B — Cloudflare Workers AI ===
-uv sync                                              # core deps only
-export RBI_EMBEDDING_PROVIDER=cloudflare
-export RBI_EMBEDDING_MODEL=@cf/baai/bge-base-en-v1.5
-export RBI_EMBEDDING_DIM=768
-export CF_ACCOUNT_ID=...                             # https://dash.cloudflare.com → Account ID
-export CF_API_TOKEN=...                              # https://dash.cloudflare.com/profile/api-tokens → "Workers AI: Read"
-# (or write {"account_id":..., "api_token":...} to ~/.gstack/cloudflare.json)
-
-# Crawl + index — populates the local corpus.
-# Local path: ~1-2 hours on first run (CPU-bound).
-# CF path:    ~30-45 min for crawl + extract; embedding is API-fast (~110 chunks/sec).
+# Crawl + index — populates the local corpus. ~30-60 min.
 uv run rbi-source-crawl                            # documents + withdrawn metadata
 uv run rbi-source-index-all                        # Master Directions
 uv run rbi-source-index-all-circulars              # Standalone Circulars
@@ -233,7 +228,7 @@ uv run rbi-source-eval                             # must pass at ≥80%
 # Run the MCP server over stdio (for local Claude Code / Claude Desktop)
 uv run rbi-source-mcp
 
-# Or the streamable-HTTP server (hosted-mode parity, for VPS / Fly / etc.)
+# Or the streamable-HTTP server (for an internal team behind a reverse proxy)
 uv run rbi-source-mcp-http --host 0.0.0.0 --port 8080
 ```
 
@@ -246,51 +241,9 @@ claude mcp add rbi-source \
   -- $(pwd)/.venv/bin/rbi-source-mcp
 ```
 
-### Docker
+### Weekly corpus refresh
 
-```bash
-docker compose run --rm crawl --profile ops      # one-shot crawl + index into the volume
-docker compose up                                # serve HTTP on :8080
-```
-
-The Compose setup uses a named `rbi_data` volume; first run will be slow as the indexers populate it. After that, `docker compose up` boots in seconds.
-
-### Fly.io
-
-`fly.toml` is committed and ready. Fork the repo, then:
-
-```bash
-# 1. Fly app + volume in one shot. --copy-config keeps fly.toml; you'll be
-#    prompted for a unique app name and region.
-fly launch --copy-config --no-deploy
-
-# 2. Tell the runtime which embedding provider + creds to use. The image
-#    bakes RBI_EMBEDDING_* defaults pointing at Cloudflare Workers AI; you
-#    just need the CF auth.
-fly secrets set \
-  CF_ACCOUNT_ID=<your-cf-account-id> \
-  CF_API_TOKEN=<your-cf-workers-ai-read-token>     # https://dash.cloudflare.com/profile/api-tokens
-
-# 3. Build a corpus locally, then ship it to the volume. The full crawl +
-#    index takes ~30-60 min; CF embeds at ~110 chunks/sec.
-RBI_EMBEDDING_PROVIDER=cloudflare \
-RBI_EMBEDDING_MODEL=@cf/baai/bge-base-en-v1.5 \
-RBI_EMBEDDING_DIM=768 \
-  uv run rbi-source-crawl && \
-  uv run rbi-source-index-all && \
-  uv run rbi-source-index-all-circulars && \
-  uv run rbi-source-index-press-release --bulk && \
-  uv run rbi-source-index-faq --bulk && \
-  uv run rbi-source-index-master-circular --bulk
-
-fly sftp put data/db.sqlite.new /data/db.sqlite.new -a <your-app-name>
-fly ssh console -a <your-app-name> -C "mv /data/db.sqlite.new /data/db.sqlite"
-
-# 4. Ship it.
-fly deploy
-```
-
-Want it all on autopilot? Wire up the same weekly refresh GH Action this repo ships with — `.github/workflows/refresh.yml` does the crawl + eval + atomic-rename without you touching anything. Set `FLY_API_TOKEN`, `CF_ACCOUNT_ID`, `CF_API_TOKEN` as repo secrets in your fork.
+The workflow at `.github/workflows/corpus-release.yml` runs every Sunday in this repo's GitHub Actions: crawl + index + smoke gate + publish a GitHub Release artifact. Self-hosters who want fresh data without re-crawling can pull the latest release artifact from this repo's [Releases page](https://github.com/harshilmathur/RBI-Source-MCP/releases).
 
 ## Roadmap
 
@@ -323,7 +276,7 @@ What the hosted instance captures per tool call:
 - tool name (`rbi_search` / `rbi_check_compliance` / `rbi_get_document` / `rbi_check_current`)
 - latency (ms), status (`ok` / `error` / `input_too_large` / `db_unavailable`)
 - shape-only metadata: `limit`, `has_filters`, `include_text`, `topic_hint` enum value, length-bucket of the input (e.g. `"500-2000"`)
-- exception class name on failure, server version, Fly region
+- exception class name on failure, server version, region (when `MCP_REGION` or `FLY_REGION` is set)
 
 What it does **not** capture: query strings, clause text, document IDs, response bodies, URLs passed to `rbi_check_current`, IP, or any client identifier. Events are anonymous (`$process_person_profile: false`) and `disable_geoip=True` is set on the SDK.
 

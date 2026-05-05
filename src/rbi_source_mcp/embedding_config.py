@@ -11,9 +11,10 @@ Env vars:
 
 Provider notes:
     local
-        Uses sentence-transformers. Requires the optional dep
-        (`uv sync --extra local-embeddings`). Suited for first-time corpus
-        builds where you don't yet have remote API creds.
+        Uses sentence-transformers. Bundled as a main dep in v0.7.0+ so
+        `pip install rbi-source-mcp` is zero-config (no Cloudflare account
+        required). Pulls CPU-only torch + the bge-small model (~135 MB)
+        on first query.
 
     cloudflare
         POSTs to https://api.cloudflare.com/client/v4/accounts/<ACCT>/ai/run/<MODEL>.
@@ -60,6 +61,18 @@ def _default_dim() -> int:
 
 MODEL: str = os.environ.get("RBI_EMBEDDING_MODEL") or _default_model()
 DIM: int = int(os.environ.get("RBI_EMBEDDING_DIM") or _default_dim())
+
+# v0.7 (autoplan review #5): pin the HuggingFace revision so a future model
+# update on HF can't silently change query/index embeddings between an old
+# corpus and a new runtime. "main" is the default float for OSS users who
+# just want to run; production deploys (and the corpus-release.yml workflow)
+# should pin to a known-good commit SHA via `RBI_LOCAL_MODEL_REVISION`.
+#
+# To find the current SHA for BAAI/bge-small-en-v1.5:
+#   curl -sSL https://huggingface.co/api/models/BAAI/bge-small-en-v1.5/revision/main \
+#     | jq -r .sha
+# Update this default once verified, OR set the env var on the build env.
+LOCAL_MODEL_REVISION: str = os.environ.get("RBI_LOCAL_MODEL_REVISION", "main")
 
 
 def cloudflare_creds() -> tuple[str, str]:
