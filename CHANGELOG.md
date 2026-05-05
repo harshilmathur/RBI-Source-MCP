@@ -4,6 +4,46 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.8.2 — fix MCP stdio protocol corruption (P0, blocked Claude Desktop)
+
+A user wired `rbi-source-mcp` into Claude Desktop locally and hit:
+
+```
+MCP rbi-source: Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)
+```
+
+**Root cause:** structlog's default `PrintLoggerFactory()` writes log
+lines to `sys.stdout`. The MCP stdio transport reserves stdout for
+line-delimited JSON-RPC, so any log line corrupts the protocol — the
+client tries to parse a log message as JSON and bails. Every successful
+tool call also produces log lines (`db.init`, `tool.dispatch.*`), so
+the server appeared broken to every user trying the stdio path.
+
+**Fix:** new `_configure_stdio_logging()` helper in `server.py` rebinds
+both structlog and the stdlib logging root to `sys.stderr` before
+`server.run()` starts. Called from `_run_stdio()`. The HTTP transport
+is unaffected (uvicorn already logs to stderr). Console scripts that
+deliberately write to stdout (`rbi-source-fetch-corpus`,
+`rbi-source-doctor`) are unaffected — they don't go through structlog.
+
+**Regression test** at `tests/test_stdio_no_stdout_pollution.py`:
+spawns `python -m rbi_source_mcp.server` as a subprocess, sends
+`initialize` + `tools/list`, asserts every non-empty stdout line parses
+as JSON, and asserts the `server.start` log line lands on stderr. 3
+test cases, ~7s. Catches any future transitive dep that decides to
+log to stdout.
+
+**Why this missed every prior review:** `/review` and `/autoplan`
+inspected source diffs; they didn't run the stdio server end-to-end.
+The integration test at `~/code/rbi-source-mcp-deploy/scripts/integration_test_public.py`
+hits the HTTP endpoint, not stdio. The local Claude Desktop wiring
+was the first time anyone actually drove the stdio path post-v0.7.0.
+Adding the regression test means CI catches this on every push now.
+
+**Action:** if you `pip install rbi-source-mcp==0.8.1` already, upgrade
+to 0.8.2 before wiring into Claude Desktop. v0.8.1 is functionally
+broken in stdio mode.
+
 ### v0.8.1 — /review fix-up for v0.8.0 (P0/P1 dim mismatch + schema check)
 
 `/review` on commit `2bfea2b` surfaced bugs in v0.8.0 that would have
