@@ -4,6 +4,77 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.7.1 — /review fix-up (corpus-release.yml, build_all.py, db.py)
+
+Fix-up release addressing P0/P1 findings from `/review` against v0.7.0.
+Both reviewers (Codex + Claude subagent) flagged the same set of bugs
+that would have broken the first weekly corpus-release run.
+
+**Bug fixes (P0):**
+- `.github/workflows/ci.yml` no longer references the removed
+  `local-embeddings` extra. Push CI was silently broken on every
+  v0.7.0 commit.
+- `.github/workflows/corpus-release.yml` sigstore step writes
+  `<input>.sigstore.json` (the actual filename produced by
+  `sigstore-python` v3); release upload + alias upload now reference
+  the correct filename and assert presence before publishing.
+- Tag name uses `corpus-YYYY-MM-DD-<run_id>` instead of
+  `corpus-${{ github.run_started_at }}` (which contains `:`, illegal
+  in Git refs, and is not a documented Actions context).
+- `list_md_ids()` now filters `WHERE document_family='master_direction'`
+  — diff-mode seeds the staging DB with rows from every family, and
+  feeding circular/PR/FAQ ids into `index_md()` would fail the entire
+  bulk run.
+- Smoke gate's regression check guards against null/empty
+  `eval-prior.json` to avoid crashing the pipeline on first weekly
+  run after v0.7.0 (or whenever the prior release has no eval.json).
+
+**Bug fixes (P1):**
+- Diff-aware skip JOINs `pa.document_id = d.document_id` (the
+  family-aware unique key) instead of bare `md_id`. The prior JOIN
+  could cross-pollinate: a press release artifact would falsely
+  satisfy the "indexed" check for a master direction with the same
+  numeric id.
+- Skip-JOIN coerces `pa.fetched_at` (full ISO 8601 with Z) to a
+  calendar date before comparing against `d.last_updated_at`
+  (`YYYY-MM-DD` or sometimes year-only). Mixed-precision lex
+  comparison was silently passing year-only updated dates as "no
+  change".
+- `db._stamp_schema_version()` reads first; only writes when the
+  value differs. The prior implementation UPSERT-bumped on every
+  open, turning every read-path connection into a writer. That broke
+  read-only mounts (`OperationalError: attempt to write a readonly
+  database`) and contended WAL locks under concurrent stdio
+  invocations.
+
+**Bug fixes (P2):**
+- `corpus_meta.embedding_revision` is stamped as `n/a-cloudflare`
+  when the build provider isn't local. The previous code hardcoded
+  the env-var default `"main"` even when the build never used HF.
+- `latest-corpus` alias is updated via `gh release upload --clobber`
+  in place rather than delete-then-create. Removes the 404 window
+  for consumers (`deploy-corpus.sh`, future fetch script) that hit
+  the alias mid-update.
+- `telemetry.py` emits both `region` (the new vendor-neutral
+  property) and `fly_region` (back-compat shim) so existing PostHog
+  insights don't silently go dark. Drop `fly_region` in v0.8.
+
+**Doc cleanup:**
+- README + CHANGELOG + db.py docstrings now correctly describe the
+  v0.7.0 install path (manual `gh release download` of
+  `corpus.sqlite.xz` or in-tree crawl) instead of referencing
+  `rbi-source-fetch-corpus` / `uvx rbi-source-mcp` which ship in
+  v0.7.1 (next release).
+
+**Known concerns (deferred):**
+- `RBI_LOCAL_MODEL_REVISION` still defaults to `main` in
+  `embedding_config.py`. The autoplan + /review reviewers flagged
+  this as a supply-chain risk; user accepted to keep the default and
+  rely on env-var override for now. Operators wanting reproducibility
+  can pin via `RBI_LOCAL_MODEL_REVISION=<sha>` (current `main` resolves
+  to `5c38ec7c405ec4b44b94cc5a9bb96e735b38267a`, last touched
+  Feb 2024).
+
 ### v0.7.0 — strip deployment from OSS, ship corpus via GitHub Releases (BREAKING)
 
 The OSS surface gets pared down to "Python package + corpus pipeline that
@@ -32,9 +103,9 @@ behavior change, but its deploy machinery moves to a private repo.
   + moving `latest-corpus` GitHub Releases.
 - **`corpus_meta` table + `CORPUS_SCHEMA_VERSION`** in `db.py`. Stamps
   schema version, embedding model + revision, build timestamp, build
-  commit, build mode on every corpus build. Self-host runtime
-  (`rbi-source-fetch-corpus` in PR2) refuses to install a corpus whose
-  schema_version doesn't match the running package.
+  commit, build mode on every corpus build. v0.7.1 will ship a fetch
+  script that refuses to install a corpus whose schema_version doesn't
+  match the running package.
 - **Content-hash diff-skip** (autoplan review #3 fix). Indexer's
   `already_indexed_ids()` now joins `pdf_artifacts.fetched_at` against
   `documents.last_updated_at` so a list-page bump on an existing MD
@@ -53,9 +124,10 @@ behavior change, but its deploy machinery moves to a private repo.
   GitHub Release, verifies SHA256 + sigstore, ships to Fly volume,
   atomic-renames. The Fly-specific glue that used to live in
   `refresh.yml` now lives here.
-- **`v0.7+ note`** banner in README's Self-host section pointing at
-  the upcoming `uvx rbi-source-mcp` + `rbi-source-fetch-corpus` flow
-  shipping in v0.7.1 (PR2).
+- **README banner** in the Self-host section explains the v0.7.0
+  install path (manual `gh release download` of `corpus.sqlite.xz` or
+  the existing crawl-and-build flow) and previews the v0.7.1
+  `rbi-source-fetch-corpus` + `uvx rbi-source-mcp` one-liner.
 
 **Reviewed via /autoplan.** CEO + Eng + DX review with Codex + Claude
 subagent. Three user-challenge overrides locked in (bundle bge-small as

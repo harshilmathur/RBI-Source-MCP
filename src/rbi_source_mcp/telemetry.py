@@ -159,11 +159,16 @@ def capture_tool_call(
         "$process_person_profile": False,
     }
     # Region: prefer MCP_REGION (vendor-neutral); fall back to FLY_REGION for
-    # back-compat with the Fly-hosted instance. Either populates the same
-    # `region` property in PostHog so dashboards don't need to know the source.
+    # back-compat with the Fly-hosted instance. Both `region` (the new,
+    # vendor-neutral property) and `fly_region` (for back-compat with
+    # PostHog dashboards/insights built before v0.7.0 that filter on the
+    # old name) are emitted simultaneously. Drop `fly_region` in v0.8.0
+    # after dashboards are migrated.
     region = os.environ.get("MCP_REGION") or os.environ.get("FLY_REGION")
     if region:
         props["region"] = region
+        # back-compat shim — remove in v0.8 once dashboards are renamed.
+        props["fly_region"] = region
     if properties:
         props.update(properties)
 

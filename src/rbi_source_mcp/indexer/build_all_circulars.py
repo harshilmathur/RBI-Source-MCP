@@ -68,17 +68,22 @@ def run(
         # preserves the current "skip if indexed" behavior for them. The
         # monthly full-rebuild safety net (corpus-release.yml mode=full)
         # catches silent RBI re-uploads.
+        #
+        # v0.7.1 review fix: join on document_id (family-aware unique key)
+        # not bare md_id (which collides across families). Coerce
+        # fetched_at to a calendar date so mixed-precision timestamps
+        # (full ISO vs YYYY-MM-DD) compare correctly.
         with connect(db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT DISTINCT pa.md_id
                 FROM pdf_artifacts pa
-                JOIN documents d ON d.md_id = pa.md_id
+                JOIN documents d ON d.document_id = pa.document_id
                 WHERE pa.is_indexed = 1
                   AND d.document_family IN ('standalone_circular','notification')
                   AND (
                       d.last_updated_at IS NULL
-                      OR pa.fetched_at >= d.last_updated_at
+                      OR date(pa.fetched_at) >= d.last_updated_at
                   )
                 """
             )

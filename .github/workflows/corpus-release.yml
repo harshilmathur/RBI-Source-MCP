@@ -127,14 +127,24 @@ jobs:
           fi
 
       - name: Diff summary (what's new/updated/skip)
+        # Normalize fetched_at to a date for the comparison: pa.fetched_at
+        # is full ISO 8601 with Z, d.last_updated_at is YYYY-MM-DD (and can
+        # be year-only as a fallback). Mixed-precision lex comparison gives
+        # wrong answers; date(...) coerces to YYYY-MM-DD on both sides.
+        # Joined via document_id (the family-aware unique key) so a circular
+        # and an MD with the same numeric md_id can't collide.
         run: |
           sqlite3 -header -column "$RBI_SOURCE_DB_NEW" "
             SELECT
-              SUM(CASE WHEN pa.md_id IS NULL THEN 1 ELSE 0 END) AS new_mds,
-              SUM(CASE WHEN pa.md_id IS NOT NULL AND (d.last_updated_at IS NOT NULL AND pa.fetched_at < d.last_updated_at) THEN 1 ELSE 0 END) AS updated_mds,
-              SUM(CASE WHEN pa.is_indexed = 1 AND (d.last_updated_at IS NULL OR pa.fetched_at >= d.last_updated_at) THEN 1 ELSE 0 END) AS skip_mds
+              SUM(CASE WHEN pa.document_id IS NULL THEN 1 ELSE 0 END) AS new_mds,
+              SUM(CASE WHEN pa.document_id IS NOT NULL
+                        AND d.last_updated_at IS NOT NULL
+                        AND date(pa.fetched_at) < d.last_updated_at THEN 1 ELSE 0 END) AS updated_mds,
+              SUM(CASE WHEN pa.is_indexed = 1
+                        AND (d.last_updated_at IS NULL
+                             OR date(pa.fetched_at) >= d.last_updated_at) THEN 1 ELSE 0 END) AS skip_mds
             FROM documents d
-            LEFT JOIN pdf_artifacts pa USING(md_id)
+            LEFT JOIN pdf_artifacts pa ON pa.document_id = d.document_id
             WHERE d.document_family='master_direction';
           "
 
@@ -164,20 +174,31 @@ jobs:
       # before installing.
       # ─────────────────────────────────────────────────────────────
       - name: Stamp corpus metadata
+        # provider != local → the local HF revision is irrelevant for this
+        # build; stamp `n/a-<provider>` so corpus_meta reflects reality.
+        # Local builds (rare in CI) get the actual env value if set, or
+        # the default from embedding_config.LOCAL_MODEL_REVISION.
         run: |
           BUILD_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           python -c "
           from rbi_source_mcp.db import connect, set_meta
           import os
           db = os.environ['RBI_SOURCE_DB_NEW']
+          provider = os.environ.get('RBI_EMBEDDING_PROVIDER', 'local').strip().lower()
+          if provider == 'local':
+              from rbi_source_mcp.embedding_config import LOCAL_MODEL_REVISION
+              revision = LOCAL_MODEL_REVISION
+          else:
+              revision = f'n/a-{provider}'
           with connect(db) as c:
-              set_meta(c, 'embedding_model',     '${{ env.RBI_EMBEDDING_MODEL }}')
-              set_meta(c, 'embedding_dim',       '${{ env.RBI_EMBEDDING_DIM }}')
-              set_meta(c, 'embedding_revision',  os.environ.get('RBI_LOCAL_MODEL_REVISION', 'main'))
-              set_meta(c, 'build_timestamp',     '$BUILD_TS')
-              set_meta(c, 'build_commit',        '${{ github.sha }}')
-              set_meta(c, 'build_mode',          '${{ env.BUILD_MODE }}')
-          print('corpus_meta stamped')
+              set_meta(c, 'embedding_provider', provider)
+              set_meta(c, 'embedding_model',    '${{ env.RBI_EMBEDDING_MODEL }}')
+              set_meta(c, 'embedding_dim',      '${{ env.RBI_EMBEDDING_DIM }}')
+              set_meta(c, 'embedding_revision', revision)
+              set_meta(c, 'build_timestamp',    '$BUILD_TS')
+              set_meta(c, 'build_commit',       '${{ github.sha }}')
+              set_meta(c, 'build_mode',         '${{ env.BUILD_MODE }}')
+          print(f'corpus_meta stamped (provider={provider}, revision={revision})')
           "
 
       # ─────────────────────────────────────────────────────────────
@@ -190,31 +211,43 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Absolute gate
+          set -euo pipefail
+          # Absolute gate (rbi-source-eval exits non-zero if hit_rate < 0.80)
           rbi-source-eval --threshold 0.80 --json > eval-current.json
           CURRENT_PCT=$(jq -r '.hit_rate' eval-current.json)
           echo "Current pass rate: $CURRENT_PCT"
 
-          # Regression gate (only if we have a prior release to compare to)
-          if gh release view latest-corpus --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            if gh release download latest-corpus \
-                 --repo "$GITHUB_REPOSITORY" \
-                 --pattern 'eval.json' \
-                 --output eval-prior.json 2>/dev/null; then
-              PRIOR_PCT=$(jq -r '.hit_rate' eval-prior.json)
-              DROP=$(python -c "print(round((float('$PRIOR_PCT') - float('$CURRENT_PCT')) * 100, 2))")
-              echo "Prior pass rate: $PRIOR_PCT (drop: ${DROP} pp)"
-              if python -c "import sys; sys.exit(0 if float('$DROP') < 5.0 else 1)"; then
-                echo "::notice::regression gate passed (drop ${DROP}pp < 5pp)"
-              else
-                echo "::error::regression gate failed: drop of ${DROP}pp exceeds 5pp threshold"
-                exit 1
-              fi
-            else
-              echo "::notice::no eval.json on prior release — regression gate skipped"
-            fi
-          else
+          # Regression gate (only if we have a prior release with a usable
+          # eval.json to compare to). Defensively guard against null/empty
+          # values — a malformed prior eval would crash the float() coercion
+          # and fail the entire pipeline despite the current build being fine.
+          if ! gh release view latest-corpus --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::notice::no prior release — regression gate skipped (first build)"
+            exit 0
+          fi
+          if ! gh release download latest-corpus \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern 'eval.json' \
+                --output eval-prior.json 2>/dev/null; then
+            echo "::notice::no eval.json on prior release — regression gate skipped"
+            exit 0
+          fi
+          if [ ! -s eval-prior.json ]; then
+            echo "::notice::eval.json on prior release is empty — regression gate skipped"
+            exit 0
+          fi
+          PRIOR_PCT=$(jq -r '.hit_rate // empty' eval-prior.json)
+          if [ -z "$PRIOR_PCT" ] || [ "$PRIOR_PCT" = "null" ]; then
+            echo "::notice::eval.json on prior release has no hit_rate — regression gate skipped"
+            exit 0
+          fi
+          DROP=$(python3 -c "print(round((float('$PRIOR_PCT') - float('$CURRENT_PCT')) * 100, 2))")
+          echo "Prior pass rate: $PRIOR_PCT (drop: ${DROP} pp)"
+          if python3 -c "import sys; sys.exit(0 if float('$DROP') < 5.0 else 1)"; then
+            echo "::notice::regression gate passed (drop ${DROP}pp < 5pp)"
+          else
+            echo "::error::regression gate failed: drop of ${DROP}pp exceeds 5pp threshold"
+            exit 1
           fi
 
       # ─────────────────────────────────────────────────────────────
@@ -229,21 +262,47 @@ jobs:
           ls -lh corpus.sqlite.xz corpus.sqlite.xz.sha256
 
       - name: Sign corpus assets with sigstore
-        # OIDC-issued (no API key in repo). Verifiable by anyone with
-        # `cosign verify-blob` or `sigstore-python`.
+        # OIDC-issued (no API key in repo). sigstore-python writes
+        # `<input>.sigstore.json` (bundle format) — naming below assumes that.
         uses: sigstore/gh-action-sigstore-python@v3.0.0
         with:
           inputs: |
             corpus.sqlite.xz
             corpus.sqlite.xz.sha256
 
+      - name: Verify sigstore bundles exist
+        # Belt-and-suspenders: if sigstore-python ever changes its default
+        # output extension, the upload step will silently miss the file
+        # because softprops/action-gh-release skips missing globs without
+        # erroring. Assert here so we fail loud, not ship unsigned.
+        run: |
+          set -euo pipefail
+          for f in corpus.sqlite.xz.sigstore.json corpus.sqlite.xz.sha256.sigstore.json; do
+            if [ ! -s "$f" ]; then
+              echo "::error::missing sigstore bundle: $f"
+              ls -la
+              exit 1
+            fi
+          done
+          echo "::notice::sigstore bundles present: $(wc -c < corpus.sqlite.xz.sigstore.json) bytes + $(wc -c < corpus.sqlite.xz.sha256.sigstore.json) bytes"
+
+      - name: Compute release tag
+        id: tag
+        # github.run_started_at is RFC3339 with `:` characters; Git refs
+        # forbid `:`. Use github.run_id (immutable, monotonic, valid in
+        # ref names) plus a sortable UTC date for human readability.
+        run: |
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+          echo "tag=corpus-${BUILD_DATE}-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+          echo "name=Corpus build ${BUILD_DATE} (run ${{ github.run_id }})" >> "$GITHUB_OUTPUT"
+
       - name: Publish timestamped GitHub Release
         # Immutable timestamped tag = rollback target. The `latest-corpus`
         # alias gets updated separately below.
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: corpus-${{ github.run_started_at }}
-          name: "Corpus build ${{ github.run_started_at }}"
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.name }}
           body: |
             Weekly corpus build (mode: `${{ env.BUILD_MODE }}`).
 
@@ -251,31 +310,40 @@ jobs:
             - embedding_model: ${{ env.RBI_EMBEDDING_MODEL }} @ ${{ env.RBI_EMBEDDING_DIM }}-dim
             - build_commit: ${{ github.sha }}
 
-            Self-hosters: `rbi-source-fetch-corpus` (v0.7+) downloads this automatically.
+            v0.7.0 self-hosters can download `corpus.sqlite.xz` directly.
+            v0.7.1 will ship `rbi-source-fetch-corpus` for one-line install.
           files: |
             corpus.sqlite.xz
             corpus.sqlite.xz.sha256
-            corpus.sqlite.xz.sigstore
-            corpus.sqlite.xz.sha256.sigstore
+            corpus.sqlite.xz.sigstore.json
+            corpus.sqlite.xz.sha256.sigstore.json
             eval-current.json
           generate_release_notes: false
 
       - name: Update `latest-corpus` moving alias
-        # The fetch script defaults to `latest-corpus` for convenience.
-        # Operators who want immutability pin to the timestamped tag.
+        # We update assets in place via `--clobber` rather than
+        # delete-then-create, which would create a 404 window for
+        # consumers polling `latest-corpus`. Per autoplan/review feedback.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Delete + recreate the alias tag pointing at the latest assets.
-          gh release delete latest-corpus --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest-corpus \
+          set -euo pipefail
+          # If the alias release doesn't exist yet (first build), create it
+          # empty before uploading; subsequent runs hit the upload --clobber path.
+          if ! gh release view latest-corpus --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create latest-corpus \
+              --repo "$GITHUB_REPOSITORY" \
+              --target main \
+              --title "Latest corpus (alias)" \
+              --notes "Moving alias for the latest corpus build. Pin to a timestamped tag for immutability."
+          fi
+          gh release upload latest-corpus \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Latest corpus (alias)" \
-            --notes "Moving alias for the latest corpus build. Pin to a timestamped tag for immutability." \
+            --clobber \
             corpus.sqlite.xz \
             corpus.sqlite.xz.sha256 \
-            corpus.sqlite.xz.sigstore \
-            corpus.sqlite.xz.sha256.sigstore \
+            corpus.sqlite.xz.sigstore.json \
+            corpus.sqlite.xz.sha256.sigstore.json \
             eval-current.json
           # Rename eval-current.json → eval.json on the alias for the
           # next run's regression-gate lookup.

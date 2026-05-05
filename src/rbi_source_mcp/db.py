@@ -13,9 +13,10 @@ Schema:
     chunks_vec         -- sqlite-vec virtual table, 384-dim float32 (dense)
     pdf_artifacts      -- audit trail of PDF fetches and extractions
 
-The DB file is rebuilt by the weekly GitHub Action and either downloaded
-by self-hosters via `rbi-source-fetch-corpus` or atomic-swapped onto a
-hosted instance's data volume.
+The DB file is rebuilt by the weekly GitHub Action. Self-hosters can
+download `corpus.sqlite.xz` from the [latest-corpus release](https://github.com/harshilmathur/RBI-Source-MCP/releases/tag/latest-corpus)
+manually for now (v0.7.1 will ship a `rbi-source-fetch-corpus` console
+script for one-line install).
 """
 
 from __future__ import annotations
@@ -197,7 +198,7 @@ CREATE TABLE IF NOT EXISTS pdf_artifacts (
 
 -- v0.7: corpus metadata kv table. Used for schema version, embedding model
 -- identity, build timestamps, etc. The schema_version row gates downstream
--- consumers (rbi-source-fetch-corpus refuses on mismatch with the running
+-- consumers (the v0.7.1 fetch script will refuse on mismatch with the running
 -- package's expected version) so a v0.7 install can never silently read a
 -- v0.8 corpus that has new columns / new tables / different embed dim.
 CREATE TABLE IF NOT EXISTS corpus_meta (
@@ -465,7 +466,7 @@ def init_db(db_path: str | Path) -> None:
 #
 # A tiny KV table for corpus-level facts that the runtime needs to verify
 # before reading: schema version, embedding model identity, build timestamp,
-# build commit. Used by `rbi-source-fetch-corpus` (PR2) to refuse mismatches
+# build commit. Used by the v0.7.1 fetch script to refuse mismatches
 # rather than silently misbehave on a corpus newer/older than this runtime.
 # ---------------------------------------------------------------------------
 
@@ -490,13 +491,30 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 
 
 def _stamp_schema_version(conn: sqlite3.Connection) -> None:
-    """Write the current CORPUS_SCHEMA_VERSION on every open.
+    """Write the current CORPUS_SCHEMA_VERSION only when missing.
 
-    Idempotent: same value → no-op. Bump the constant in this module when a
-    schema change breaks runtime backward-compat; existing corpora carrying
-    an older value will need a rebuild.
+    Read-first to avoid the UPSERT-bumps-updated_at-on-every-open pattern
+    that would turn every read-path connection into a writer. That matters
+    because:
+      - readers on read-only mounts (a sane self-host pattern) would
+        crash with `OperationalError: attempt to write a readonly database`
+      - WAL writers contend under concurrent stdio invocations
+      - the value almost never changes (only on a schema bump), so the
+        write-on-every-open was strictly cost without benefit
+
+    Bump the CORPUS_SCHEMA_VERSION constant when a schema change breaks
+    runtime backward-compat; existing corpora carrying an older value get
+    overwritten on the first write-allowed open after a build.
     """
-    set_meta(conn, "schema_version", CORPUS_SCHEMA_VERSION)
+    existing = get_meta(conn, "schema_version")
+    if existing == CORPUS_SCHEMA_VERSION:
+        return
+    try:
+        set_meta(conn, "schema_version", CORPUS_SCHEMA_VERSION)
+    except sqlite3.OperationalError as exc:
+        # Read-only mount path: don't crash the open. The corpus stamp is
+        # a build-time concern; runtime can run without it.
+        logger.debug("db.schema_version.write_skip", error=str(exc))
 
 
 # ---------------------------------------------------------------------------

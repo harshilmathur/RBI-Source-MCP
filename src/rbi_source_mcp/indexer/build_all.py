@@ -51,10 +51,20 @@ class BulkResult:
 
 
 def list_md_ids(db_path: Path) -> list[str]:
-    """All Master Direction IDs from the list-page crawl, ordered by ID."""
+    """All Master Direction IDs from the list-page crawl, ordered by ID.
+
+    v0.7.1 (review fix): filter by document_family. Earlier this returned
+    every md_id in the documents table, which was harmless when the staging
+    DB was always empty before crawl. Now that the GHA workflow seeds the
+    staging DB from the previous corpus release, the documents table holds
+    rows from every family — feeding circular/PR/FAQ ids into index_md()
+    fails the entire bulk run.
+    """
     with connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT md_id FROM documents WHERE md_id IS NOT NULL ORDER BY md_id"
+            "SELECT md_id FROM documents "
+            "WHERE md_id IS NOT NULL AND document_family = 'master_direction' "
+            "ORDER BY md_id"
         ).fetchall()
     return [r["md_id"] for r in rows]
 
@@ -70,14 +80,26 @@ def already_indexed_ids(db_path: Path) -> set[str]:
     bumped by the new crawl pass would be skipped silently — chunks would
     stay stale forever.
 
+    v0.7.1 (review fix): join via `pa.document_id = d.document_id` (the
+    family-aware unique key) instead of bare `md_id`. The documents UNIQUE
+    constraint is `(md_id, document_family)`, so an MD and a press release
+    with the same numeric id are distinct rows; bare-md_id JOIN would let a
+    PR's pdf_artifacts row falsely satisfy the "indexed" check for an MD.
+
+    v0.7.1 (review fix): coerce `pa.fetched_at` to a calendar date for the
+    timestamp comparison. `fetched_at` is full ISO 8601 with Z (e.g.,
+    `2025-04-22T14:33:11.123456Z`); `d.last_updated_at` is `YYYY-MM-DD`
+    (or `YYYY` as a fallback for rarely-amended MDs). Mixed-precision lex
+    comparison gave wrong answers — `date(...)` normalizes both sides.
+
     The fix joins `documents.last_updated_at` (refreshed by the crawler this
     run) against `pdf_artifacts.fetched_at` (stamped at the previous index
     pass). We only skip when:
-      - we have at least one indexed pdf_artifacts row for the md_id, AND
+      - we have at least one indexed pdf_artifacts row for the doc, AND
       - either the list page has no `last_updated_at` signal at all
         (rare; rarely-amended MDs), OR
-      - our `fetched_at` is at-or-after the list page's `last_updated_at`
-        (no claimed change since we last touched the PDF).
+      - the date of our fetch is at-or-after the list page's
+        last_updated_at (no claimed change since we last touched the PDF).
 
     This catches the "list page bumped → re-fetch + re-extract" case while
     still skipping the no-change case fast (no PDF GET, no extract, no
@@ -90,12 +112,12 @@ def already_indexed_ids(db_path: Path) -> set[str]:
             """
             SELECT DISTINCT pa.md_id
             FROM pdf_artifacts pa
-            JOIN documents d ON d.md_id = pa.md_id
+            JOIN documents d ON d.document_id = pa.document_id
             WHERE pa.is_indexed = 1
               AND d.document_family = 'master_direction'
               AND (
                   d.last_updated_at IS NULL
-                  OR pa.fetched_at >= d.last_updated_at
+                  OR date(pa.fetched_at) >= d.last_updated_at
               )
             """
         ).fetchall()
