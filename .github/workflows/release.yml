@@ -1,22 +1,36 @@
 name: Publish to PyPI
 
 # Triggers on tag push: `v0.8.0`, `v1.2.3`, etc.
-# Builds wheel + sdist via the `build` package, then publishes via
-# trusted publishing (no PyPI API token in repo secrets — PyPI verifies
-# the workflow's GitHub Actions OIDC identity directly).
+#
+# v0.8.1 review #5 fix: signing happens in the BUILD job, not after
+# publish. Previous ordering (publish-then-sign) meant a sigstore
+# failure would leave an unsigned wheel live on PyPI permanently. Now:
+#
+#   build (incl. sigstore-sign of wheel + sdist)
+#       │
+#       ├──> publish (PyPI trusted publishing)
+#       └──> attach-release (upload dist + sigstore bundles to GH Release)
+#
+# Both consumers run in parallel from the signed artifacts. If signing
+# fails, build fails, nothing publishes. If publish OR attach fails
+# independently, the other still completes.
 #
 # One-time setup before this workflow can publish anything:
 #   1. Reserve `rbi-source-mcp` on https://pypi.org (manual upload of an
-#      empty 0.0.0 placeholder, or upload the first real release)
+#      empty 0.0.0 placeholder, or upload the first real release).
 #   2. https://pypi.org/manage/project/rbi-source-mcp/settings/publishing/
 #      → "Add a new pending publisher" with:
 #        - PyPI Project Name: rbi-source-mcp
 #        - Owner:             harshilmathur
 #        - Repository name:   RBI-Source-MCP
 #        - Workflow name:     release.yml
-#        - Environment name:  pypi   (matches the environment block below)
+#        - Environment name:  pypi   (matches the publish job below)
 #   3. Push a `v0.8.0` tag — first run will publish + retire the pending
-#      publisher into a permanent trusted publisher
+#      publisher into a permanent trusted publisher.
+#
+# Action pinning: tags below are tracked by Dependabot. Move to commit
+# SHA pinning in v0.9 if supply-chain risk warrants it (it would block
+# auto-applying a compromise of pypa/gh-action-pypi-publish, etc.).
 
 on:
   push:
@@ -25,11 +39,11 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # required for OIDC trusted publishing
+  id-token: write   # required for OIDC trusted publishing + sigstore
 
 jobs:
   build:
-    name: Build distributions
+    name: Build + sign distributions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,9 +56,9 @@ jobs:
       - name: Install build tools
         run: python -m pip install --upgrade pip build
 
-      - name: Verify pyproject version matches tag
-        # `v0.8.0` tag → version must be `0.8.0` in pyproject.toml.
-        # Catches mistakes like tagging without bumping the version.
+      - name: Verify pyproject + __init__ versions match tag
+        # `v0.8.0` tag → version must be `0.8.0` in pyproject.toml AND
+        # __init__.py. Catches mistakes like tagging without bumping.
         run: |
           set -euo pipefail
           TAG_VERSION="${GITHUB_REF_NAME#v}"
@@ -53,7 +67,6 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME ($TAG_VERSION) does not match pyproject version $PYPROJECT_VERSION"
             exit 1
           fi
-          # Also verify __version__ matches.
           INIT_VERSION=$(python -c "import re,pathlib; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', pathlib.Path('src/rbi_source_mcp/__init__.py').read_text()).group(1))")
           if [ "$TAG_VERSION" != "$INIT_VERSION" ]; then
             echo "::error::tag $GITHUB_REF_NAME ($TAG_VERSION) does not match __init__.py version $INIT_VERSION"
@@ -64,10 +77,27 @@ jobs:
       - name: Build wheel + sdist
         run: python -m build
 
-      - name: List built artifacts
+      - name: Sigstore-sign wheel + sdist (BEFORE publish)
+        # If this fails, the `build` job fails, downstream `publish` and
+        # `attach-release` never run, so PyPI never sees an unsigned wheel.
+        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        with:
+          inputs: ./dist/*.tar.gz ./dist/*.whl
+
+      - name: Verify sigstore bundles exist
+        # Belt-and-suspenders: fail if sigstore output filename ever drifts
+        # so the upload step can't silently miss a sig.
+        run: |
+          set -euo pipefail
+          for f in ./dist/*.sigstore.json; do
+            [ -s "$f" ] || { echo "::error::missing or empty sigstore bundle"; ls -la dist/; exit 1; }
+          done
+          echo "::notice::$(ls dist/*.sigstore.json | wc -l) sigstore bundles signed"
+
+      - name: List built + signed artifacts
         run: ls -la dist/
 
-      - name: Upload artifacts
+      - name: Upload artifacts (dist + sigstore bundles)
         uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -91,24 +121,30 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Strip sigstore bundles before PyPI upload
+        # PyPI rejects unrecognized files in the upload set. Sigstore
+        # bundles go to the GitHub Release in the parallel job.
+        run: rm -f dist/*.sigstore.json
+
       - name: Publish via trusted publishing
         uses: pypa/gh-action-pypi-publish@release/v1
         # No `password:` field — the action exchanges the GitHub Actions
         # OIDC token for a short-lived PyPI upload token. PyPI verifies
-        # the OIDC identity matches the trusted publisher we registered.
+        # the OIDC identity matches the trusted publisher registered
+        # at one-time-setup step 2 (see file header).
         with:
           packages-dir: dist/
 
-  sigstore-sign:
-    # Optional but recommended: sign the published artifacts with sigstore
-    # too, so anyone can verify the wheel/sdist hasn't been tampered with
-    # post-publish (defense against PyPI compromise + a rogue maintainer).
-    name: Sigstore-sign artifacts
-    needs: publish
+  attach-release:
+    name: Attach signed artifacts to GitHub Release
+    needs: build
+    # Runs in parallel with `publish` so a publish failure doesn't block
+    # signature attachment, and an attach failure doesn't leave PyPI
+    # orphaned. Both depend on `build`, which already signed everything.
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
-      contents: write   # to attach signatures to the GitHub Release
+      contents: write   # create/update the GH Release
+
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -116,15 +152,7 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Sign with sigstore
-        uses: sigstore/gh-action-sigstore-python@v3.0.0
-        with:
-          inputs: ./dist/*.tar.gz ./dist/*.whl
-
-      - name: Attach signatures to GitHub Release
-        # The git tag already created a Release (or the user did manually);
-        # this step uploads the .sigstore.json bundles to it. If no Release
-        # exists for the tag, create one.
+      - name: Create or update GitHub Release with signed artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -136,7 +164,12 @@ jobs:
               --title "$TAG" \
               --generate-notes
           fi
+          # Upload everything — wheel, sdist, and sigstore bundles — so
+          # users can `pip download + sigstore verify` independently of
+          # PyPI's hosting.
           gh release upload "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber \
+            ./dist/*.tar.gz \
+            ./dist/*.whl \
             ./dist/*.sigstore.json
