@@ -327,9 +327,234 @@ def test_doctor_cf_creds_fail_when_cf_no_creds(monkeypatch) -> None:
 def test_doctor_run_returns_list(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("RBI_SOURCE_DB", str(tmp_path / "missing.sqlite"))
     checks = doctor.run(quick=True)
-    assert len(checks) >= 4  # python + sqlite_vec + corpus + hf_cache + cf_creds
+    # python + sqlite_vec + corpus + corpus_runtime_match + hf_cache + cf_creds
+    assert len(checks) >= 5
     assert any(c.name == "python" for c in checks)
     assert any(c.name == "corpus" for c in checks)
+    assert any(c.name == "corpus_runtime_match" for c in checks)
+
+
+# ---------------------------------------------------------------------------
+# v0.8.1 review fix-up tests.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_sha256_gnu_format() -> None:
+    line = "deadbeef" + "0" * 56 + "  corpus.sqlite.xz"
+    assert fetch_corpus._parse_sha256_line(line) == "deadbeef" + "0" * 56
+
+
+def test_parse_sha256_bsd_format() -> None:
+    line = "SHA256 (corpus.sqlite.xz) = " + "ab" * 32
+    assert fetch_corpus._parse_sha256_line(line) == "ab" * 32
+
+
+def test_parse_sha256_rejects_garbage() -> None:
+    with pytest.raises(ValueError):
+        fetch_corpus._parse_sha256_line("not a checksum")
+
+
+def test_fetch_xz_bomb_aborts(
+    httpx_mock,
+    tmp_path: Path,
+    monkeypatch,
+    github_release_json: dict,
+) -> None:
+    """Mock the decompression cap to a tiny value, confirm a real corpus trips it."""
+    db = tmp_path / "real.sqlite"
+    init_db(db)
+    raw = db.read_bytes()
+    buf = io.BytesIO()
+    with lzma.open(buf, "wb") as f:
+        f.write(raw)
+    xz_bytes = buf.getvalue()
+    sha = hashlib.sha256(xz_bytes).hexdigest()
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/harshilmathur/RBI-Source-MCP/releases/tags/latest-corpus",
+        json=github_release_json,
+    )
+    httpx_mock.add_response(url="https://example.com/dl/corpus.sqlite.xz", content=xz_bytes)
+    httpx_mock.add_response(
+        url="https://example.com/dl/corpus.sqlite.xz.sha256",
+        content=f"{sha}  corpus.sqlite.xz\n".encode(),
+    )
+    # Tiny cap forces the abort branch to fire on a legitimate corpus.
+    monkeypatch.setattr(fetch_corpus, "MAX_DECOMPRESSED_BYTES", 64)
+    with pytest.raises(SystemExit) as exc_info:
+        fetch_corpus.fetch(
+            destination=tmp_path / "out" / "db.sqlite", verify_sigstore=False
+        )
+    assert exc_info.value.code == 2
+
+
+def test_fetch_dim_mismatch_aborts(
+    httpx_mock,
+    tmp_path: Path,
+    monkeypatch,
+    github_release_json: dict,
+) -> None:
+    """Build a corpus with embedding_dim=999, runtime DIM=768 → abort."""
+    db = tmp_path / "wrong-dim.sqlite"
+    init_db(db)
+    with connect(db) as c:
+        set_meta(c, "embedding_provider", "cloudflare")
+        set_meta(c, "embedding_model", "@cf/something")
+        set_meta(c, "embedding_dim", "999")
+    raw = db.read_bytes()
+    buf = io.BytesIO()
+    with lzma.open(buf, "wb") as f:
+        f.write(raw)
+    xz_bytes = buf.getvalue()
+    sha = hashlib.sha256(xz_bytes).hexdigest()
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/harshilmathur/RBI-Source-MCP/releases/tags/latest-corpus",
+        json=github_release_json,
+    )
+    httpx_mock.add_response(url="https://example.com/dl/corpus.sqlite.xz", content=xz_bytes)
+    httpx_mock.add_response(
+        url="https://example.com/dl/corpus.sqlite.xz.sha256",
+        content=f"{sha}  corpus.sqlite.xz\n".encode(),
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        fetch_corpus.fetch(
+            destination=tmp_path / "out" / "db.sqlite", verify_sigstore=False
+        )
+    assert exc_info.value.code == 2
+
+
+def test_fetch_error_format_problem_cause_fix(
+    httpx_mock,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """v0.8.1 review #10 fix: assert stderr carries the structured format."""
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/harshilmathur/RBI-Source-MCP/releases/tags/nope",
+        status_code=404,
+        json={"message": "Not Found"},
+    )
+    with pytest.raises(SystemExit):
+        fetch_corpus.fetch(
+            tag="nope",
+            destination=tmp_path / "out" / "db.sqlite",
+            verify_sigstore=False,
+        )
+    captured = capsys.readouterr()
+    assert "ERROR:" in captured.err
+    assert "cause:" in captured.err
+    assert "fix:" in captured.err
+
+
+def test_fetch_schema_mismatch_no_longer_self_passes(
+    httpx_mock,
+    tmp_path: Path,
+    github_release_json: dict,
+) -> None:
+    """v0.8.1 review #1 fix: verify the schema check uses raw read.
+
+    Build a corpus stamped with schema_version=999 (a "future" version
+    the running package doesn't understand). Pre-v0.8.1 this would have
+    been silently overwritten to the current version by connect()'s
+    auto-stamp; now the check reads raw and refuses.
+    """
+    db = tmp_path / "future-schema.sqlite"
+    init_db(db)
+    with connect(db) as c:
+        c.execute("UPDATE corpus_meta SET value = '999' WHERE key = 'schema_version'")
+    raw = db.read_bytes()
+    buf = io.BytesIO()
+    with lzma.open(buf, "wb") as f:
+        f.write(raw)
+    xz_bytes = buf.getvalue()
+    sha = hashlib.sha256(xz_bytes).hexdigest()
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/harshilmathur/RBI-Source-MCP/releases/tags/latest-corpus",
+        json=github_release_json,
+    )
+    httpx_mock.add_response(url="https://example.com/dl/corpus.sqlite.xz", content=xz_bytes)
+    httpx_mock.add_response(
+        url="https://example.com/dl/corpus.sqlite.xz.sha256",
+        content=f"{sha}  corpus.sqlite.xz\n".encode(),
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        fetch_corpus.fetch(
+            destination=tmp_path / "out" / "db.sqlite", verify_sigstore=False
+        )
+    assert exc_info.value.code == 2
+
+
+def test_fetch_sigstore_missing_package_aborts(
+    httpx_mock,
+    tmp_path: Path,
+    monkeypatch,
+    corpus_xz: tuple[bytes, str],
+    github_release_json: dict,
+) -> None:
+    """--verify-sigstore + sigstore not installed → structured abort."""
+    xz_bytes, sha = corpus_xz
+    # Simulate sigstore not being importable.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **kw):
+        if name.startswith("sigstore"):
+            raise ImportError("sigstore not installed (mocked)")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    # Add the sigstore asset so the missing-asset check passes.
+    json_with_sig = dict(github_release_json)
+    json_with_sig["assets"] = json_with_sig["assets"] + [
+        {
+            "name": "corpus.sqlite.xz.sigstore.json",
+            "browser_download_url": "https://example.com/dl/corpus.sqlite.xz.sigstore.json",
+        }
+    ]
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/harshilmathur/RBI-Source-MCP/releases/tags/latest-corpus",
+        json=json_with_sig,
+    )
+    httpx_mock.add_response(url="https://example.com/dl/corpus.sqlite.xz", content=xz_bytes)
+    httpx_mock.add_response(
+        url="https://example.com/dl/corpus.sqlite.xz.sha256",
+        content=f"{sha}  corpus.sqlite.xz\n".encode(),
+    )
+    httpx_mock.add_response(
+        url="https://example.com/dl/corpus.sqlite.xz.sigstore.json",
+        content=b'{"fake": "bundle"}',
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        fetch_corpus.fetch(
+            destination=tmp_path / "out" / "db.sqlite", verify_sigstore=True
+        )
+    assert exc_info.value.code == 2
+
+
+def test_doctor_corpus_runtime_match_ok(
+    real_corpus: Path, monkeypatch
+) -> None:
+    """real_corpus fixture stamps embedding_dim=768; runtime default is 768."""
+    monkeypatch.setenv("RBI_SOURCE_DB", str(real_corpus))
+    # Force re-import of embedding_config so it picks up env (if changed).
+    c = doctor.check_corpus_runtime_match(real_corpus)
+    # default DIM is 768, fixture stamps 768 — match.
+    assert c.status == "OK"
+
+
+def test_doctor_corpus_runtime_match_fails_on_dim_mismatch(
+    tmp_path: Path,
+) -> None:
+    """Build a corpus with embedding_dim=384, runtime DIM is 768 → FAIL."""
+    db = tmp_path / "wrong-dim.sqlite"
+    init_db(db)
+    with connect(db) as c:
+        set_meta(c, "embedding_dim", "384")
+    out = doctor.check_corpus_runtime_match(db)
+    assert out.status == "FAIL"
+    assert "384-dim" in out.detail and "768-dim" in out.detail
 
 
 def test_doctor_json_output(monkeypatch, tmp_path: Path, capsys) -> None:

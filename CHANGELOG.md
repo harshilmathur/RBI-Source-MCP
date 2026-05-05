@@ -4,6 +4,84 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.8.1 — /review fix-up for v0.8.0 (P0/P1 dim mismatch + schema check)
+
+`/review` on commit `2bfea2b` surfaced bugs in v0.8.0 that would have
+broken the headline 3-line install for default users. Both reviewers
+(Codex + Claude subagent) agreed; verdict: FIX-FIRST.
+
+**Headline fix — unify on bge-base @ 768-dim everywhere:**
+
+The published corpus is built in CI with Cloudflare bge-base @ 768-dim,
+but v0.8.0 set the default LOCAL provider to bge-small @ 384-dim. A
+default user running `pip install rbi-source-mcp` + `rbi-source-fetch-corpus`
+would download a 768-dim corpus and silently fail dense retrieval against
+a 384-dim runtime. Codex caught this; the autoplan + PR1 reviews missed
+it.
+
+Fix: `embedding_config.py` defaults to `BAAI/bge-base-en-v1.5` (768-dim)
+for the local provider too. Trades ~300 MB extra disk for ONE corpus,
+ONE config, no two-variants logic. Local query embed is ~50 ms slower
+than bge-small but still well within MCP-server latency budget.
+
+**P0 fixes:**
+- `_check_schema_compatibility` now opens the corpus READ-ONLY via
+  `sqlite3.connect(uri='file:...?mode=ro', uri=True)` instead of the
+  project's `connect()` wrapper. The wrapper would call
+  `_stamp_schema_version` and stamp the running version BEFORE the
+  check read it, silently passing the missing-stamp abort branch.
+- `corpus-release.yml` now explicitly stamps `set_meta(c, 'schema_version',
+  CORPUS_SCHEMA_VERSION)` in the metadata step. Without this, future
+  schema bumps would ship a corpus with the OLD stamp because diff-mode
+  seeds the staging DB and `_stamp_schema_version` is a no-op when present.
+
+**P1 fixes:**
+- `_atomic_rename_into_place` now copies via `<final>.partial` on the
+  destination filesystem and uses `os.replace()` for the rename. The
+  prior implementation called `staging.rename(final)` which raised EXDEV
+  cross-fs (the common case: `/tmp` → `$HOME`); the fallback
+  `shutil.copy2` was a non-atomic byte-by-byte copy directly into the
+  user's destination. A crash mid-copy would corrupt an existing live
+  corpus.
+- `release.yml` signs in the `build` job BEFORE `publish` runs.
+  `publish` and `attach-release` both depend on `build`; if signing
+  fails, build fails, neither downstream runs. Eliminates the window
+  where an unsigned wheel hits PyPI.
+- `fetch_corpus._check_schema_compatibility` validates
+  `corpus_meta.embedding_dim` against runtime `embedding_config.DIM`.
+  `rbi-source-doctor` adds a parallel `corpus_runtime_match` check.
+
+**P2 fixes:**
+- `_decompress_xz` now caps decompressed output at 2 GB (review #6).
+  Tracks bytes_written in a manual chunked loop; aborts with a structured
+  error if the cap is hit. Defends against decompression bombs from
+  typosquat repos (`--repo` accepts arbitrary values).
+- README leads with `uv tool install rbi-source-mcp` (or
+  `pipx install`) instead of `uvx rbi-source-mcp`. `uvx` is ephemeral —
+  Claude Desktop restarting the server every session would re-resolve
+  deps and re-load the model.
+- `doctor.check_local_model_present` reads `embedding_config.MODEL`
+  instead of hardcoding bge-small; skips the check entirely when
+  `RBI_EMBEDDING_PROVIDER != local`.
+- `doctor.check_hf_cache_writable` uses `tempfile.NamedTemporaryFile`
+  instead of a fixed sentinel filename — concurrent doctor runs no
+  longer race on unlink.
+- `_parse_sha256_line` accepts both GNU (`<hex>  <file>`) and BSD
+  (`SHA256 (<file>) = <hex>`) checksum formats.
+
+**Test additions:**
+- 10 new tests covering: SHA256 GNU/BSD parsing + garbage rejection,
+  xz decompression bomb cap, embedding dim mismatch, structured stderr
+  format (PROBLEM/CAUSE/FIX), schema mismatch no longer self-passes,
+  sigstore-package-missing abort path, doctor corpus_runtime_match OK
+  + FAIL paths.
+- 122 tests passing, 3 skipped (94 baseline + 28 fetch_corpus).
+
+**Known concern (deferred to v0.9):**
+- GitHub Actions in `release.yml` still pin to moving tags (`@v4`,
+  `@release/v1`, `@v3.0.0`). Should pin to commit SHAs. Dependabot will
+  flag updates; tracked for v0.9.
+
 ### v0.8.0 — `pip install rbi-source-mcp` + `rbi-source-fetch-corpus` (one-line install)
 
 The headline UX promised in v0.7.0 lands. Self-host is now three lines:

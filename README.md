@@ -196,8 +196,8 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
 Three lines, no Docker, no Cloudflare account, no crawling.
 
 ```bash
-# 1. Install the package
-uvx rbi-source-mcp                              # one-shot, or: pip install rbi-source-mcp
+# 1. Install (persistent — stays available across Claude Desktop restarts)
+uv tool install rbi-source-mcp                  # or: pipx install rbi-source-mcp
 
 # 2. Get the prebuilt corpus (~80 MB compressed, refreshed weekly via GitHub Actions)
 rbi-source-fetch-corpus                         # → ~/.local/share/rbi-source-mcp/db.sqlite
@@ -210,7 +210,9 @@ rbi-source-fetch-corpus                         # → ~/.local/share/rbi-source-
 #    }
 ```
 
-That's it. The default embedding path runs `bge-small-en-v1.5` in-process via `sentence-transformers` (~135 MB model auto-downloaded on first query, cached at `~/.cache/huggingface/hub/`). No external API needed. CPU-only — works on a laptop.
+That's it. The default embedding path runs `bge-base-en-v1.5` in-process via `sentence-transformers` (~440 MB model auto-downloaded on first query, cached at `~/.cache/huggingface/hub/`). No external API needed. CPU-only — works on a laptop.
+
+> Use `uv tool install` (or `pipx install`) instead of `uvx rbi-source-mcp` — `uvx` is a one-shot ephemeral runner; Claude Desktop restarting the server every time would re-resolve deps and re-load the model. `uv tool install` keeps a persistent venv with the model cached.
 
 ### Verify the install
 

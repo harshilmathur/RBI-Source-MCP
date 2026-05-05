@@ -174,6 +174,14 @@ jobs:
       # before installing.
       # ─────────────────────────────────────────────────────────────
       - name: Stamp corpus metadata
+        # v0.8.1 review #2 fix: explicitly stamp schema_version from the
+        # running CORPUS_SCHEMA_VERSION constant. _stamp_schema_version()
+        # in connect() only writes when missing (correct semantics for
+        # runtime), so the build is the source of truth for version
+        # bumps. Without an explicit set_meta here, a diff-mode build
+        # seeded from a previous corpus would keep the OLD stamp forever
+        # even after the schema changes.
+        #
         # provider != local → the local HF revision is irrelevant for this
         # build; stamp `n/a-<provider>` so corpus_meta reflects reality.
         # Local builds (rare in CI) get the actual env value if set, or
@@ -181,7 +189,7 @@ jobs:
         run: |
           BUILD_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           python -c "
-          from rbi_source_mcp.db import connect, set_meta
+          from rbi_source_mcp.db import CORPUS_SCHEMA_VERSION, connect, set_meta
           import os
           db = os.environ['RBI_SOURCE_DB_NEW']
           provider = os.environ.get('RBI_EMBEDDING_PROVIDER', 'local').strip().lower()
@@ -191,6 +199,7 @@ jobs:
           else:
               revision = f'n/a-{provider}'
           with connect(db) as c:
+              set_meta(c, 'schema_version',     CORPUS_SCHEMA_VERSION)
               set_meta(c, 'embedding_provider', provider)
               set_meta(c, 'embedding_model',    '${{ env.RBI_EMBEDDING_MODEL }}')
               set_meta(c, 'embedding_dim',      '${{ env.RBI_EMBEDDING_DIM }}')
@@ -198,7 +207,7 @@ jobs:
               set_meta(c, 'build_timestamp',    '$BUILD_TS')
               set_meta(c, 'build_commit',       '${{ github.sha }}')
               set_meta(c, 'build_mode',         '${{ env.BUILD_MODE }}')
-          print(f'corpus_meta stamped (provider={provider}, revision={revision})')
+          print(f'corpus_meta stamped (schema={CORPUS_SCHEMA_VERSION}, provider={provider}, revision={revision})')
           "
 
       # ─────────────────────────────────────────────────────────────

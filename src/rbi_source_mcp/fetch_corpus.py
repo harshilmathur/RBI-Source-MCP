@@ -50,7 +50,7 @@ import httpx
 import structlog
 
 from . import __version__
-from .db import CORPUS_SCHEMA_VERSION, connect, get_meta
+from .db import CORPUS_SCHEMA_VERSION
 
 logger = structlog.get_logger(__name__)
 
@@ -216,11 +216,50 @@ def _sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+def _parse_sha256_line(line: str) -> str:
+    """Parse a sha256sum line in either GNU or BSD style.
+
+    GNU style:  ``<hex>  <filename>``
+    BSD style:  ``SHA256 (<filename>) = <hex>``  (mac `shasum -p`, BSD `sha256`)
+
+    Returns the lowercase 64-char hex digest. Raises ValueError if neither
+    format matches.
+    """
+    line = line.strip()
+    # BSD: SHA256 (file) = hex
+    if line.upper().startswith("SHA256 ") and "=" in line:
+        return line.rsplit("=", 1)[1].strip().lower()
+    # GNU: hex<spaces>file
+    parts = line.split()
+    if not parts:
+        raise ValueError("empty checksum line")
+    candidate = parts[0].lower()
+    if len(candidate) == 64 and all(c in "0123456789abcdef" for c in candidate):
+        return candidate
+    raise ValueError(f"unrecognized checksum format: {line[:80]!r}")
+
+
 def _verify_sha256(asset: Path, sha_file: Path) -> None:
-    expected_line = sha_file.read_text(encoding="utf-8").strip().splitlines()[0]
-    expected = expected_line.split()[0].strip()
+    raw = sha_file.read_text(encoding="utf-8").strip()
+    if not raw:
+        _abort(
+            problem="SHA256 checksum file is empty",
+            cause=f"no contents in {sha_file}",
+            fix="the release asset is malformed; re-run later or report the bad release",
+        )
+    try:
+        expected = _parse_sha256_line(raw.splitlines()[0])
+    except ValueError as exc:
+        _abort(
+            problem="Could not parse SHA256 checksum file",
+            cause=str(exc),
+            fix=(
+                "expected GNU `<hex>  <file>` or BSD `SHA256 (<file>) = <hex>` format;\n"
+                "         the release asset is malformed"
+            ),
+        )
     actual = _sha256_of(asset)
-    if expected.lower() != actual.lower():
+    if expected != actual.lower():
         _abort(
             problem="SHA256 verification failed",
             cause=f"expected {expected[:16]}... got {actual[:16]}...",
@@ -274,17 +313,50 @@ def _verify_sigstore(asset: Path, bundle: Path, *, repo: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Hard cap on decompressed corpus size. The legitimate corpus today is
+# ~250-500 MB; 2 GB is generous future headroom. A maliciously crafted
+# xz that decompresses to TBs (decompression bomb) would otherwise fill
+# the user's disk silently. SHA256 + sigstore prove the artifact came
+# from us; this cap prevents OUR build from accidentally shipping
+# something obscene, AND defends against a typosquat repo via `--repo`.
+MAX_DECOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+
+
 def _decompress_xz(src: Path, dest: Path) -> None:
+    """Stream-decompress with a hard size cap (review #6 fix)."""
+    bytes_written = 0
+    chunk_size = 1 << 20  # 1 MiB
     try:
         with lzma.open(src, "rb") as src_f, dest.open("wb") as dest_f:
-            shutil.copyfileobj(src_f, dest_f)
+            while True:
+                chunk = src_f.read(chunk_size)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > MAX_DECOMPRESSED_BYTES:
+                    dest_f.close()
+                    dest.unlink(missing_ok=True)
+                    _abort(
+                        problem="Corpus decompression exceeded safety cap",
+                        cause=(
+                            f"xz output > {MAX_DECOMPRESSED_BYTES // (1 << 30)} GB "
+                            "(probable decompression bomb)"
+                        ),
+                        fix=(
+                            "the release asset is malformed or malicious. Verify --repo,\n"
+                            "         re-run with --verify-sigstore, or report the bad asset."
+                        ),
+                    )
+                dest_f.write(chunk)
     except OSError as exc:
+        dest.unlink(missing_ok=True)
         _abort(
             problem=f"Failed to write decompressed corpus to {dest}",
             cause=str(exc),
             fix="check disk space and that the destination is writable",
         )
     except lzma.LZMAError as exc:
+        dest.unlink(missing_ok=True)
         _abort(
             problem="Corpus xz file is corrupt",
             cause=str(exc),
@@ -293,24 +365,47 @@ def _decompress_xz(src: Path, dest: Path) -> None:
 
 
 def _check_schema_compatibility(db_path: Path) -> dict[str, str | None]:
-    """Open the corpus, read corpus_meta, refuse if schema_version mismatches.
+    """Open the corpus READ-ONLY, read corpus_meta, refuse on mismatch.
 
-    Returns the meta dict (for the success summary line) on the happy path.
+    v0.8.1 review #1 fix: open with SQLite URI `mode=ro` + skip the
+    project's `connect()` wrapper. The wrapper would call
+    `_stamp_schema_version`, which on a fresh corpus stamps the running
+    version BEFORE we read it back — silently passing the missing-stamp
+    abort branch and any v0.6 corpus that lacks the stamp.
+
+    v0.8.1 review #3 fix: also validate `corpus_meta.embedding_dim`
+    against the runtime `embedding_config.DIM`. v0.8.1 unifies on 768
+    everywhere, but a user with leftover `RBI_EMBEDDING_DIM=384` env
+    from a v0.7 install would silently break dense retrieval.
+
+    Returns the meta dict (for the success summary line) on the happy
+    path.
     """
+    from . import embedding_config as _cfg
+
+    uri = f"file:{db_path}?mode=ro"
     try:
-        with connect(db_path) as conn:
-            meta = {
-                "schema_version": get_meta(conn, "schema_version"),
-                "embedding_provider": get_meta(conn, "embedding_provider"),
-                "embedding_model": get_meta(conn, "embedding_model"),
-                "embedding_dim": get_meta(conn, "embedding_dim"),
-                "embedding_revision": get_meta(conn, "embedding_revision"),
-                "build_timestamp": get_meta(conn, "build_timestamp"),
-                "build_commit": get_meta(conn, "build_commit"),
-                "build_mode": get_meta(conn, "build_mode"),
-            }
-            doc_count_row = conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()
-            meta["documents"] = str(doc_count_row["n"])
+        with sqlite3.connect(uri, uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute("SELECT key, value FROM corpus_meta")
+            kv = {row["key"]: row["value"] for row in cur.fetchall()}
+            doc_count = conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()[0]
+    except sqlite3.OperationalError as exc:
+        msg = str(exc).lower()
+        if "no such table" in msg and "corpus_meta" in msg:
+            _abort(
+                problem="Corpus is missing the corpus_meta table",
+                cause="the corpus was built by a release older than v0.7.0",
+                fix=(
+                    "use --tag to pick a corpus built by v0.7.0+ (the latest-corpus alias\n"
+                    "         tracks the freshest), or accept the risk via --no-verify-schema"
+                ),
+            )
+        _abort(
+            problem=f"Downloaded corpus at {db_path} is not readable",
+            cause=str(exc),
+            fix="re-run to download a fresh copy; the release asset may be corrupt",
+        )
     except sqlite3.DatabaseError as exc:
         _abort(
             problem=f"Downloaded corpus at {db_path} is not a valid SQLite database",
@@ -318,9 +413,17 @@ def _check_schema_compatibility(db_path: Path) -> dict[str, str | None]:
             fix="re-run to download a fresh copy; the release asset may be corrupt",
         )
 
+    meta: dict[str, str | None] = {
+        k: kv.get(k) for k in (
+            "schema_version", "embedding_provider", "embedding_model",
+            "embedding_dim", "embedding_revision", "build_timestamp",
+            "build_commit", "build_mode",
+        )
+    }
+    meta["documents"] = str(doc_count)
+
     actual = meta["schema_version"]
     if actual is None:
-        # Pre-v0.7 corpus or build that didn't stamp meta. Refuse.
         _abort(
             problem="Corpus is missing the schema_version stamp",
             cause="the corpus was built by a release older than v0.7.0",
@@ -338,24 +441,74 @@ def _check_schema_compatibility(db_path: Path) -> dict[str, str | None]:
                 "         OR use --tag to fetch a corpus built for your installed version"
             ),
         )
+
+    # Embedding-dim mismatch detection. v0.8.1 unifies the default to 768
+    # across both providers, but a user with a stale RBI_EMBEDDING_DIM=384
+    # env (left over from a v0.7 setup) would silently break dense retrieval.
+    corpus_dim_str = meta.get("embedding_dim")
+    if corpus_dim_str is not None:
+        try:
+            corpus_dim = int(corpus_dim_str)
+        except ValueError:
+            corpus_dim = None
+        if corpus_dim is not None and corpus_dim != _cfg.DIM:
+            _abort(
+                problem=f"Embedding dim mismatch: corpus={corpus_dim}, runtime={_cfg.DIM}",
+                cause=(
+                    f"the corpus was built with {meta.get('embedding_provider')} "
+                    f"@ {meta.get('embedding_model')} ({corpus_dim}-dim), but your runtime "
+                    f"is configured for {_cfg.DIM}-dim"
+                ),
+                fix=(
+                    "unset RBI_EMBEDDING_DIM and RBI_EMBEDDING_MODEL so they default to\n"
+                    "         the v0.8.1 unified bge-base @ 768-dim; OR build the corpus locally\n"
+                    "         with your preferred provider"
+                ),
+            )
     return meta
 
 
 def _atomic_rename_into_place(staging: Path, final: Path) -> None:
-    """Move the verified corpus to its final destination.
+    """Move the verified corpus to its final destination, atomically.
 
-    `Path.rename()` is atomic on the same filesystem. Falls back to a
-    copy+remove for cross-filesystem moves (which shouldn't happen for
-    the common case where staging and final are both under HOME, but
-    handle it gracefully for users pointing $RBI_SOURCE_DB at a mounted
-    volume).
+    v0.8.1 review #4 fix: copy to a sibling `<final>.partial` on the
+    destination filesystem first, fsync to ensure bytes are durable,
+    then `os.replace()` for an atomic rename within the same fs.
+
+    The previous implementation called `staging.rename(final)` which
+    works on same-fs but raises EXDEV cross-fs (the common case: staging
+    is in /tmp, final is under $HOME); the fallback `shutil.copy2`
+    directly into `final` was non-atomic — a crash mid-copy would leave
+    a corrupt SQLite at the user's working destination, blowing away an
+    existing healthy corpus.
+
+    Same-fs path: rename(staging → partial → final) is atomic.
+    Cross-fs path: copy(staging → partial), fsync, rename(partial → final).
+    Both paths leave `final` either fully old or fully new, never half.
     """
     final.parent.mkdir(parents=True, exist_ok=True)
+    partial = final.parent / (final.name + ".partial")
+    # Clean up a stray .partial from a previous crashed run.
+    partial.unlink(missing_ok=True)
+
     try:
-        staging.rename(final)
+        # Try the same-filesystem fast path: move staging → partial. If
+        # they're on different filesystems this raises OSError (EXDEV).
+        os.rename(staging, partial)
     except OSError:
-        shutil.copy2(staging, final)
+        # Cross-fs: byte-copy + fsync, then atomic rename within final.parent.
+        shutil.copy2(staging, partial)
+        try:
+            with partial.open("rb") as f:
+                os.fsync(f.fileno())
+        except OSError:
+            # fsync isn't supported on all filesystems (e.g., some FUSE
+            # mounts); proceed without it, the rename is still atomic.
+            pass
         staging.unlink(missing_ok=True)
+
+    # Atomic on the destination filesystem regardless of how partial got there.
+    os.replace(partial, final)
 
 
 # ---------------------------------------------------------------------------

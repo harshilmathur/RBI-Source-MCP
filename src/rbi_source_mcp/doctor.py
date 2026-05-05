@@ -120,6 +120,79 @@ def check_sqlite_vec() -> Check:
     )
 
 
+def check_corpus_runtime_match(corpus_path: Path) -> Check:
+    """Validate corpus_meta.embedding_dim matches runtime embedding_config.DIM.
+
+    v0.8.1 review #3 fix: catches the case where corpus was built with
+    768-dim CF and runtime is configured for 384-dim local (or vice
+    versa). Without this check, dense retrieval silently falls back to
+    FTS-only when the dims mismatch.
+    """
+    from . import embedding_config as _cfg
+
+    t0 = time.perf_counter()
+    if not corpus_path.exists():
+        # check_corpus already reports FAIL for missing corpus.
+        return Check(
+            name="corpus_runtime_match",
+            status="OK",
+            detail="skipped (no corpus to validate)",
+            elapsed_ms=int((time.perf_counter() - t0) * 1000),
+        )
+    try:
+        with sqlite3.connect(f"file:{corpus_path}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT value FROM corpus_meta WHERE key = 'embedding_dim'"
+            ).fetchone()
+            corpus_dim_str = row[0] if row else None
+    except sqlite3.OperationalError:
+        # Pre-v0.7 corpus, no corpus_meta table; check_corpus will FAIL.
+        return Check(
+            name="corpus_runtime_match",
+            status="OK",
+            detail="skipped (corpus pre-dates corpus_meta)",
+            elapsed_ms=int((time.perf_counter() - t0) * 1000),
+        )
+    elapsed = int((time.perf_counter() - t0) * 1000)
+    if corpus_dim_str is None:
+        return Check(
+            name="corpus_runtime_match",
+            status="WARN",
+            detail="corpus has no embedding_dim stamp; can't verify match",
+            elapsed_ms=elapsed,
+        )
+    try:
+        corpus_dim = int(corpus_dim_str)
+    except ValueError:
+        return Check(
+            name="corpus_runtime_match",
+            status="WARN",
+            detail=f"corpus embedding_dim={corpus_dim_str!r} is not numeric",
+            elapsed_ms=elapsed,
+        )
+    if corpus_dim != _cfg.DIM:
+        return Check(
+            name="corpus_runtime_match",
+            status="FAIL",
+            detail=(
+                f"corpus is {corpus_dim}-dim but runtime is {_cfg.DIM}-dim — "
+                "dense retrieval will silently degrade to FTS-only"
+            ),
+            fix=(
+                "unset RBI_EMBEDDING_DIM and RBI_EMBEDDING_MODEL to use the v0.8.1\n"
+                "           defaults (bge-base @ 768-dim everywhere), OR fetch a corpus\n"
+                "           that matches your dim:  rbi-source-fetch-corpus"
+            ),
+            elapsed_ms=elapsed,
+        )
+    return Check(
+        name="corpus_runtime_match",
+        status="OK",
+        detail=f"corpus_dim={corpus_dim} matches runtime DIM={_cfg.DIM}",
+        elapsed_ms=elapsed,
+    )
+
+
 def check_corpus(corpus_path: Path) -> Check:
     t0 = time.perf_counter()
     if not corpus_path.exists():
@@ -189,21 +262,34 @@ def check_torch_import() -> Check:
     )
 
 
-def check_hf_cache_writable() -> Check:
-    """Confirm we can write to the HuggingFace cache. First-run model
-    download will land here; if it's not writable, the local provider
-    silently fails on its first query."""
-    t0 = time.perf_counter()
+def _hf_cache_path() -> Path:
     cache = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
     if not cache:
         cache = str(Path("~/.cache/huggingface").expanduser())
-    cache_path = Path(cache).expanduser()
+    return Path(cache).expanduser()
+
+
+def check_hf_cache_writable() -> Check:
+    """Confirm we can write to the HuggingFace cache. First-run model
+    download will land here; if it's not writable, the local provider
+    silently fails on its first query.
+
+    v0.8.1 review #11 fix: probe with a unique tempfile, not a fixed
+    sentinel filename — concurrent doctor runs would race on the unlink.
+    """
+    import tempfile
+
+    t0 = time.perf_counter()
+    cache_path = _hf_cache_path()
     try:
         cache_path.mkdir(parents=True, exist_ok=True)
-        # Probe writability with a sentinel file.
-        probe = cache_path / ".rbi_doctor_probe"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink()
+        # NamedTemporaryFile inside the cache dir → unique name, auto-cleanup
+        # on close, no race with concurrent doctor invocations.
+        with tempfile.NamedTemporaryFile(
+            dir=cache_path, prefix=".rbi_doctor_probe_", delete=True
+        ) as f:
+            f.write(b"ok")
+            f.flush()
     except PermissionError as exc:
         return Check(
             name="hf_cache",
@@ -232,31 +318,44 @@ def check_hf_cache_writable() -> Check:
 
 
 def check_local_model_present() -> Check:
-    """Soft check — the bge-small-en-v1.5 model directory under HF cache.
-    WARN if missing; first query will trigger the ~135 MB download."""
+    """Soft check — the configured local model under HF cache.
+
+    v0.8.1 review #8 fix: read the model name from `embedding_config.MODEL`
+    instead of hardcoding bge-small. Skip the check entirely when
+    `RBI_EMBEDDING_PROVIDER != local` — the local model isn't loaded in
+    that case, so its presence is irrelevant.
+    """
+    from . import embedding_config as _cfg
+
     t0 = time.perf_counter()
-    cache = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
-    if not cache:
-        cache = str(Path("~/.cache/huggingface").expanduser())
-    base = Path(cache).expanduser()
-    # HuggingFace's cache layout: <cache>/hub/models--BAAI--bge-small-en-v1.5/
-    model_dir = base / "hub" / "models--BAAI--bge-small-en-v1.5"
+    if _cfg.PROVIDER != "local":
+        return Check(
+            name="local_model",
+            status="OK",
+            detail=f"skipped (provider={_cfg.PROVIDER}, no local model needed)",
+            elapsed_ms=int((time.perf_counter() - t0) * 1000),
+        )
+    base = _hf_cache_path()
+    # HF cache layout: <cache>/hub/models--<org>--<name>/
+    # MODEL is e.g. "BAAI/bge-base-en-v1.5" → "models--BAAI--bge-base-en-v1.5"
+    model_subdir = "models--" + _cfg.MODEL.replace("/", "--")
+    model_dir = base / "hub" / model_subdir
     elapsed = int((time.perf_counter() - t0) * 1000)
     if model_dir.exists() and any(model_dir.iterdir()):
         return Check(
             name="local_model",
             status="OK",
-            detail=f"bge-small-en-v1.5 cached at {model_dir}",
+            detail=f"{_cfg.MODEL} cached at {model_dir}",
             elapsed_ms=elapsed,
         )
     return Check(
         name="local_model",
         status="WARN",
-        detail="bge-small-en-v1.5 not yet downloaded",
+        detail=f"{_cfg.MODEL} not yet downloaded",
         fix=(
-            "harmless — first query will download it (~135 MB). To prefetch:\n"
-            '           python -c "from sentence_transformers import SentenceTransformer; '
-            'SentenceTransformer(\\"BAAI/bge-small-en-v1.5\\")"'
+            f"harmless — first query will download it (~440 MB for bge-base). To prefetch:\n"
+            "           python -c \"from sentence_transformers import SentenceTransformer; "
+            f"SentenceTransformer('{_cfg.MODEL}')\""
         ),
         elapsed_ms=elapsed,
     )
@@ -310,10 +409,12 @@ def run(*, quick: bool = False) -> list[Check]:
     """Run all checks. Order: cheap first, slow last."""
     from .fetch_corpus import _default_destination
 
+    corpus_path = _default_destination()
     checks: list[Check] = []
     checks.append(check_python_version())
     checks.append(check_sqlite_vec())
-    checks.append(check_corpus(_default_destination()))
+    checks.append(check_corpus(corpus_path))
+    checks.append(check_corpus_runtime_match(corpus_path))
     checks.append(check_hf_cache_writable())
     checks.append(check_cf_creds_when_provider_cf())
     if not quick:
