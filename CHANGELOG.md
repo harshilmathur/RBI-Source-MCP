@@ -4,6 +4,34 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.8.3 — refresh hosted homepage (docs-only patch)
+
+The static homepage at `src/rbi_source_mcp/static/index.html` (served at
+`https://rbi-source.harshil.ai/`) was written when only the hosted demo
+existed and the corpus refresh was weekly. Now ships the v0.8.x state:
+
+- Embedding model: `bge-base-en-v1.5` 768-dim everywhere (was
+  `bge-small-en-v1.5` 384-dim).
+- Refresh cadence: daily 02:00 UTC + monthly full rebuild safety net
+  (was "weekly refresh planned").
+- Self-host instructions: `pip install rbi-source-mcp` +
+  `rbi-source-fetch-corpus` + Claude Desktop config (was `git clone +
+  uv sync + rbi-source-index-all`, written before PyPI shipped).
+- Install section now leads "Two paths. Pick one." with two side-by-side
+  install cards (hosted demo vs PyPI self-host) before the existing
+  client-compatibility table.
+- Per-family corpus stats tildeed (~) since they fluctuate daily; live
+  counts via `/health`.
+- `<meta name="description">` updated to mention `pip install` + daily.
+
+Zero Python code changes. New PyPI release because the static HTML
+ships inside the wheel and the Fly hosted instance installs the
+package via `pip install rbi-source-mcp==<version>` at image build
+time. Bumping version is the simplest way to ship the homepage update
+without changing the build strategy.
+
+125 tests still pass.
+
 ### Infra: corpus build cadence weekly → daily; release GC
 
 Operational change to `.github/workflows/corpus-release.yml`. No code or
