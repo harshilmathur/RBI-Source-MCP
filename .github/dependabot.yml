@@ -1,0 +1,40 @@
+# Dependabot config — keeps the SHA-pinned GitHub Actions in
+# .github/workflows/ from going stale. Each pinned action carries a
+# `# pin: <name>@<tag>` comment that Dependabot's tag-matcher uses to
+# detect upgrades; this file just turns the watcher on.
+#
+# Cadence: weekly. Actions don't churn often, and we'd rather review
+# upgrade PRs in batches than have the inbox fill up.
+#
+# Python deps live in pyproject.toml (`[project] dependencies` + extras).
+# Hatchling-built; no requirements.txt or lock file in the OSS repo, so
+# pip ecosystem isn't included here. Self-hosters resolve transitively
+# at install time.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # Roll up routine action upgrades into a single PR.
+      # Publishing-path actions (sigstore, pypi-publish) get individual
+      # PRs so reviewer attention isn't diluted across them.
+      actions-minor:
+        patterns:
+          - "actions/*"
+          - "softprops/*"
+        update-types:
+          - minor
+          - patch

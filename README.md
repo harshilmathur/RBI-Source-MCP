@@ -13,8 +13,8 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that b
 
 Two ways to use it:
 
-- **Try the hosted demo:** `https://rbi-source.harshil.ai/mcp/` (free, no auth, no install) · [client setup ↓](#connect-from-your-client)
-- **Self-host in 3 lines:** `pip install rbi-source-mcp` + `rbi-source-fetch-corpus` + Claude Desktop config · [details ↓](#self-host)
+- **Self-host in 3 lines** (recommended): `pip install rbi-source-mcp` + `rbi-source-fetch-corpus` + Claude Desktop config. Local stdio MCP, your data stays on your machine, no API keys. [Details ↓](#self-host)
+- **Try the hosted demo first:** `https://rbi-source.harshil.ai/mcp/` (free, no auth, no install). Good for evaluating before you install. [Client setup ↓](#connect-from-your-client)
 
 > ⚠️ **Unofficial, community-maintained open-source tool.** RBI Source MCP is not affiliated with, endorsed by, or sponsored by the Reserve Bank of India. RBI® is a trademark of the Reserve Bank of India. For takedown or legal inquiries, open an issue.
 
@@ -41,24 +41,9 @@ Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-base-en-v1.5` 768-dim d
 
 ## Quick start
 
-Two paths. Pick one.
+Two paths. Self-host is the typical install; the hosted demo is here so you can evaluate before installing.
 
-### A. Use the hosted demo (zero install)
-
-The maintainer runs a free, no-auth instance:
-
-```
-https://rbi-source.harshil.ai/mcp/
-```
-
-Public, unauthenticated, retrieval-only. Hosted in Mumbai. Every response carries the mandatory legal disclaimer. Good for evaluation; rate-limited to 60 req/min/IP.
-
-```bash
-curl -sS https://rbi-source.harshil.ai/health
-# → {"version":"0.8.x","status":"ok","documents":803}
-```
-
-### B. Self-host (3 lines, runs locally)
+### A. Self-host (3 lines, runs locally)
 
 ```bash
 pip install rbi-source-mcp                       # or: uv tool install / pipx install
@@ -66,7 +51,24 @@ rbi-source-fetch-corpus                          # downloads ~80MB sigstore-sign
 # Add to claude_desktop_config.json: {"mcpServers": {"rbi-source": {"command": "rbi-source-mcp"}}}
 ```
 
-Defaults to the local `bge-base-en-v1.5` embedder (no API keys). [Full self-host guide ↓](#self-host)
+Defaults to the local `bge-base-en-v1.5` embedder (no API keys, no Cloudflare account). Your queries never leave the machine. [Full self-host guide ↓](#self-host)
+
+### B. Try the hosted demo (zero install)
+
+Want to evaluate the tool before installing? The maintainer runs a free, no-auth instance:
+
+```
+https://rbi-source.harshil.ai/mcp/
+```
+
+Public, unauthenticated, retrieval-only. Hosted in Mumbai. Every response carries the mandatory legal disclaimer. Rate-limited to 60 req/min/IP.
+
+```bash
+curl -sS https://rbi-source.harshil.ai/health
+# → {"version":"0.8.x","status":"ok","documents":803}
+```
+
+For anything beyond evaluation — production use, sensitive queries, custom corpora — go with self-host above.
 
 ### Connect from your client
 
@@ -308,13 +310,25 @@ uv run rbi-source-eval                          # gate at ≥80%
 
 Crawl + index takes ~30-60 min. The same pipeline runs daily in [`.github/workflows/corpus-release.yml`](.github/workflows/corpus-release.yml) (diff mode, ~5 min) and publishes the result as a GitHub Release.
 
-### Run as an HTTP server (advanced)
+### Run as an HTTP server (advanced — only if you're hosting it)
 
-For an internal team behind a reverse proxy:
+The default install is a local stdio MCP, which is what most people want. The HTTP server is here for the rare case where you're running your own *hosted* instance for a team or a fleet of clients:
 
 ```bash
 rbi-source-mcp-http --host 0.0.0.0 --port 8080
 ```
+
+If you put a reverse proxy in front (Cloudflare, Fly.io, nginx, Caddy, etc.), set `RBI_TRUSTED_PROXY_HEADERS` to the comma-separated list of headers your proxy uses to forward the real client IP. Without this, per-IP rate limits collapse to a single bucket for all traffic — or worse, can be reset per-request by a forged `X-Forwarded-For` header. Common setups:
+
+```bash
+# Cloudflare → Fly.io (the maintainer's hosted instance)
+RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip rbi-source-mcp-http --host 0.0.0.0 --port 8080
+
+# Plain reverse proxy on the same host (nginx, Caddy)
+RBI_TRUSTED_PROXY_HEADERS=x-forwarded-for rbi-source-mcp-http --host 0.0.0.0 --port 8080
+```
+
+Default (env unset) = peer IP, which is correct for `localhost` / `0.0.0.0` direct exposure. **Self-hosters running stdio (the default) ignore this entirely** — there's no HTTP, no proxy, no rate-limit middleware.
 
 ### Daily corpus refresh
 
