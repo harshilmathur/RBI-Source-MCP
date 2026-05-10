@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import sqlite3
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -72,6 +73,67 @@ _STATIC_ALLOWLIST: dict[str, tuple[str, str]] = {
     "/favicon-512.png": ("favicon-512.png", "image/png"),
     "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
 }
+
+
+def _validate_db_at_startup() -> None:
+    """Open the corpus DB at startup and confirm it has documents.
+
+    A misconfigured deploy (volume not mounted, corpus never installed,
+    wrong RBI_SOURCE_DB path) can otherwise pass the process-up check
+    and serve `/` and the OAuth metadata endpoints fine, while every
+    `/mcp` tool call 500s. Crashing in lifespan startup makes the bad
+    deploy visible to the orchestrator instead of running degraded.
+
+    Failure handling, by error class:
+    - `sqlite3.DatabaseError` (file is not a valid SQLite, malformed schema,
+      I/O failure mid-read) → re-raise. The DB is fundamentally unusable;
+      the orchestrator should crash-loop the machine, not route traffic.
+    - Empty corpus (`doc_count == 0`) → log warning, continue. /health
+      will return 503 and the orchestrator pulls the machine from rotation.
+      This is a transient state during a corpus refresh / first deploy.
+    - Other exceptions (path missing, permissions, transient sqlite locks)
+      → log warning, continue. /health is the source of truth.
+
+    Codex review #M3 / red-team: the previous "swallow everything" version
+    contradicted its own docstring. Re-raising on DatabaseError aligns
+    behavior with stated intent.
+    """
+    from .db import connect
+
+    db_path = os.environ.get("RBI_SOURCE_DB", "./data/db.sqlite")
+    try:
+        with connect(db_path) as conn:
+            doc_count = conn.execute("SELECT count(*) FROM documents").fetchone()[0]
+    except sqlite3.DatabaseError as exc:
+        logger.error(
+            "startup.corpus_corrupt",
+            error=str(exc),
+            exc_type=type(exc).__name__,
+            db=db_path,
+            note="DB file is unreadable / not a valid SQLite — failing startup",
+        )
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "startup.db_validation_failed",
+            error=str(exc),
+            exc_type=type(exc).__name__,
+            db=db_path,
+            note="server still starts; /health will surface the failure",
+        )
+        return
+
+    if doc_count == 0:
+        logger.warning(
+            "startup.corpus_empty",
+            db=db_path,
+            note=(
+                "DB opens but has zero documents — /health will return 503. "
+                "Run rbi-source-fetch-corpus or check the volume mount."
+            ),
+        )
+    else:
+        logger.info("startup.corpus_ok", db=db_path, documents=int(doc_count))
 
 
 def _prewarm_embedder_sync() -> None:
@@ -134,7 +196,7 @@ def _wants_html(request: Request) -> bool:
 
 logger = structlog.get_logger(__name__)
 
-# Banner cache: stats only change on weekly refresh, so a 60-second TTL is
+# Banner cache: stats only change on daily refresh, so a 60-second TTL is
 # fine. Without this, every GET / opens a fresh SQLite connection (with
 # schema migration + extension load) — wasteful and trivially DOSable.
 _BANNER_TTL_SECONDS = 60.0
@@ -167,6 +229,27 @@ MAX_REQUEST_BODY_BYTES = 200_000
 # Caught by /cso review (#2, 2026-04-29).
 RATE_LIMIT_PER_WINDOW = 60
 RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+# OAuth-ceremony rate limit (separate bucket). Claude.ai's connector flow
+# hits the discovery+register+authorize+token sequence ~5-8 times per setup;
+# 30 req/min per IP is generous for a real connector handshake but still
+# catches a flood. Was previously a full exemption — codex review caught
+# it as a DoS vector against /token / /authorize.
+OAUTH_RATE_LIMIT_PER_WINDOW = 30
+OAUTH_RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+# Trusted proxy headers — comma-separated, lowercased. The hosted
+# instance behind Cloudflare → Fly should set
+# `RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip` so the
+# rate-limit key is the real client IP. Self-host installs leave this
+# empty and fall back to the peer IP, which is correct when there is
+# no proxy in front. Without this gate, any client can bypass the
+# rate limit by sending its own X-Forwarded-For header.
+_TRUSTED_PROXY_HEADERS: tuple[str, ...] = tuple(
+    h.strip().lower()
+    for h in os.environ.get("RBI_TRUSTED_PROXY_HEADERS", "").split(",")
+    if h.strip()
+)
 
 
 class _NormalizeMcpPath:
@@ -234,21 +317,40 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+_OAUTH_PATHS: frozenset[str] = frozenset(
+    {
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-authorization-server",
+        "/register",
+        "/authorize",
+        "/token",
+    }
+)
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Per-IP fixed-window rate limit. In-memory only — fine on a
     single-machine deployment. If we ever scale to >1 machine, swap to
     a Redis-backed limiter (or push the rate-limit decision to a CDN edge).
 
+    Two separate buckets:
+      - main bucket: 60 req/window for `/mcp` and any non-exempt path.
+      - oauth bucket: 30 req/window for the OAuth ceremony endpoints
+        (discovery + register + authorize + token). Claude.ai's connector
+        hits this sequence 5-8x per setup; a separate looser bucket lets
+        the ceremony complete without blowing through the main quota,
+        while still catching abuse. Codex review caught the previous
+        full exemption.
+
     Excludes `/health` (probes hit it every 30s) and `/` (banner is
     curl-friendly and should not count against a user's MCP quota).
 
-    Real client IP is taken from the proxy headers in priority order:
-    `CF-Connecting-IP` (Cloudflare), `Fly-Client-IP` (Fly proxy),
-    `X-Forwarded-For` (generic). The order matters: behind chained proxies
-    like CF→Fly, the chain is Client → CF → Fly → us, so CF-Connecting-IP
-    is the real client. Other reverse proxies (nginx, Caddy, etc.) populate
-    X-Forwarded-For. Falls back to the request's peer address if no proxy
-    header is set.
+    Real client IP is taken from `_TRUSTED_PROXY_HEADERS` — only headers
+    the operator explicitly opted into are read. Hosted (Fly behind CF)
+    sets `RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip`.
+    Self-host installs leave it unset and use the peer IP. Without this
+    gate, any client could send `X-Forwarded-For: 1.2.3.4` and reset
+    the bucket per-request.
     """
 
     def __init__(
@@ -257,76 +359,92 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         *,
         limit: int = RATE_LIMIT_PER_WINDOW,
         window_s: float = RATE_LIMIT_WINDOW_SECONDS,
-        excluded_paths: tuple[str, ...] = (
-            "/health",
-            "/",
-            # OAuth ceremonial endpoints. Claude.ai's connector flow hits
-            # the discovery+register+authorize+token sequence multiple
-            # times per connection setup; if those count against the
-            # per-IP 60/min budget, real MCP traffic immediately after
-            # gets rate-limited. Exempt them — they're cheap, idempotent,
-            # and not the cost-amp risk we sized the limit for.
-            "/.well-known/oauth-protected-resource",
-            "/.well-known/oauth-authorization-server",
-            "/register",
-            "/authorize",
-            "/token",
-        ),
+        oauth_limit: int = OAUTH_RATE_LIMIT_PER_WINDOW,
+        oauth_window_s: float = OAUTH_RATE_LIMIT_WINDOW_SECONDS,
+        excluded_paths: tuple[str, ...] = ("/health", "/"),
+        trusted_proxy_headers: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__(app)
         self.limit = limit
         self.window_s = window_s
+        self.oauth_limit = oauth_limit
+        self.oauth_window_s = oauth_window_s
         self.excluded_paths = excluded_paths
-        # Map ip -> (window_start_ts, count). Periodically pruned in dispatch.
+        # When None, fall back to the module-level env-driven default.
+        # Tests pass an explicit tuple to control behavior without touching
+        # process env.
+        self.trusted_proxy_headers = (
+            trusted_proxy_headers if trusted_proxy_headers is not None else _TRUSTED_PROXY_HEADERS
+        )
+        # ip -> (window_start_ts, count). Periodically pruned in dispatch.
         self._buckets: dict[str, tuple[float, int]] = {}
+        self._oauth_buckets: dict[str, tuple[float, int]] = {}
         self._last_prune = time.time()
 
     def _client_ip(self, request: Request) -> str:
-        for header in ("cf-connecting-ip", "fly-client-ip", "x-forwarded-for"):
+        # Only read headers the operator explicitly trusts. The default
+        # (no env set) falls straight through to peer IP, which is the
+        # right answer for self-host installs running on localhost or
+        # bare VMs without a reverse proxy.
+        for header in self.trusted_proxy_headers:
             v = request.headers.get(header)
             if v:
-                # X-Forwarded-For may be a comma-separated chain; first hop wins.
+                # XFF may be comma-separated; trusted upstream proxies
+                # *append* to it, so the first hop is the real client.
                 return v.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 
+    def _is_oauth_path(self, path: str) -> bool:
+        # Claude.ai also probes /.well-known/oauth-protected-resource/mcp,
+        # so prefix-match the well-known namespace.
+        return path in _OAUTH_PATHS or path.startswith("/.well-known/")
+
     async def dispatch(self, request: Request, call_next):  # noqa: ANN001
-        # Exempt liveness probes, the curl-friendly banner, and the OAuth
-        # ceremonial endpoints. We use prefix-startswith for /.well-known/
-        # since Claude.ai also probes /.well-known/oauth-protected-resource/mcp.
         path = request.url.path
-        if path in self.excluded_paths or path.startswith("/.well-known/"):
+        if path in self.excluded_paths:
             return await call_next(request)
+
+        is_oauth = self._is_oauth_path(path)
+        bucket = self._oauth_buckets if is_oauth else self._buckets
+        limit = self.oauth_limit if is_oauth else self.limit
+        window_s = self.oauth_window_s if is_oauth else self.window_s
 
         ip = self._client_ip(request)
         now = time.time()
 
-        # Periodic prune (every ~window) to bound memory under churn.
+        # Periodic prune (every ~main window) to bound memory under churn.
         if now - self._last_prune > self.window_s:
             cutoff = now - self.window_s
             self._buckets = {k: v for k, v in self._buckets.items() if v[0] > cutoff}
+            cutoff_oauth = now - self.oauth_window_s
+            self._oauth_buckets = {
+                k: v for k, v in self._oauth_buckets.items() if v[0] > cutoff_oauth
+            }
             self._last_prune = now
 
-        window_start, count = self._buckets.get(ip, (now, 0))
-        if now - window_start >= self.window_s:
+        window_start, count = bucket.get(ip, (now, 0))
+        if now - window_start >= window_s:
             window_start = now
             count = 0
         count += 1
-        self._buckets[ip] = (window_start, count)
+        bucket[ip] = (window_start, count)
 
-        if count > self.limit:
-            retry_after = max(1, int(self.window_s - (now - window_start)))
+        if count > limit:
+            retry_after = max(1, int(window_s - (now - window_start)))
             logger.warning(
                 "rate_limit.exceeded",
                 ip=ip,
                 count=count,
-                limit=self.limit,
-                window_s=self.window_s,
+                limit=limit,
+                window_s=window_s,
+                bucket="oauth" if is_oauth else "main",
+                path=path,
             )
             return JSONResponse(
                 {
                     "error": "rate_limit_exceeded",
-                    "limit": self.limit,
-                    "window_seconds": self.window_s,
+                    "limit": limit,
+                    "window_seconds": window_s,
                     "retry_after_seconds": retry_after,
                 },
                 status_code=429,
@@ -360,6 +478,16 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
         async with session_manager.run():
             logger.info("http.lifespan.start", version=__version__)
+            # Eager DB validation. /health does the same checks lazily on
+            # first probe and returns 503 if the corpus is missing/empty,
+            # but a misconfigured deploy that never gets a /health probe
+            # could serve clean status pages while every /mcp call 500s.
+            # Failing in lifespan startup makes the server crash visibly
+            # so the orchestrator (Fly, k8s, systemd) reports the bad
+            # deploy instead of running degraded. Best-effort: if the
+            # check itself raises an unexpected error, log it but don't
+            # block startup — /health remains the source of truth.
+            _validate_db_at_startup()
             # Pre-warm the embedder so the first user request doesn't pay
             # the cold-start tax. With the bge-small model pre-cached in
             # HF_HOME (~/.cache/huggingface or whatever the operator points
@@ -397,7 +525,7 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         Deep checks:
           1. SQLite opens at the configured path.
           2. The corpus has at least one indexed document (catches missing
-             volume, missing weekly refresh, etc.).
+             volume, missing daily refresh, etc.).
           3. sqlite-vec loaded (degraded but not failed if not — dense
              retrieval falls back to FTS5-only).
 
@@ -431,7 +559,7 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
             status_code = 503
         else:
             if doc_count == 0:
-                # Volume mounted empty, or the weekly refresh hasn't run
+                # Volume mounted empty, or the daily refresh hasn't run
                 # yet. Either way: we'd fail every real request — flip 503
                 # so the orchestrator doesn't route to us.
                 payload.update(
@@ -675,9 +803,22 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
     #   2. Rate limit      (next — drop floods cheaply)
     #   3. CORS            (innermost — sets headers on the actual response)
     # So we add them in opposite order:
+    # CORS: wildcard origin is correct for an unauthenticated, read-only
+    # public MCP. The MCP spec doesn't define a fixed origin allow-list
+    # (Inspector runs on localhost; Cursor/Windsurf/Cline all run from
+    # arbitrary file:// or app:// origins; future browser MCP hosts will
+    # too). The wildcard is only safe because:
+    #   - allow_credentials=False — no cookies, no Authorization is read
+    #     against a session, so a victim's browser can't be tricked into
+    #     leaking per-user state (there is none).
+    #   - body-size cap + per-IP rate limit guard the operator's bill.
+    # The CORS spec rejects `allow_origins=["*"]` combined with
+    # `allow_credentials=True`, but pin it explicitly so a future edit
+    # can't introduce the dangerous combination.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
+        allow_credentials=False,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["mcp-session-id"],

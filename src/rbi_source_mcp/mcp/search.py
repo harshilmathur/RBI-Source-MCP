@@ -19,7 +19,61 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
+import structlog
+
 from ..db import escape_fts5_query, hybrid_search
+
+logger = structlog.get_logger(__name__)
+
+
+def _classify_embed_error(exc: BaseException) -> str:
+    """Map an embedder failure to a short, non-leaky reason code.
+
+    Returned codes are stable and free of any path / account / proxy info
+    that exception messages typically carry. The full exception (with
+    `str(exc)`) is logged via structlog for the operator; only the code
+    flows into the LLM-visible response. Codex/red-team review caught the
+    raw-`str(exc)` echo as an info-disclosure path.
+    """
+    name = type(exc).__name__
+    if isinstance(exc, ImportError):
+        return "embedder_unavailable"
+    if isinstance(exc, (FileNotFoundError, IsADirectoryError)):
+        return "model_not_downloaded"
+    if isinstance(exc, ValueError):
+        # to_sqlite_vec_bytes raises ValueError on dim mismatch
+        return "dim_mismatch"
+    if name in {
+        "ConnectionError", "ConnectError", "ReadTimeout", "WriteTimeout",
+        "TimeoutException", "HTTPError", "HTTPStatusError",
+    }:
+        return "cf_api_error"
+    if isinstance(exc, OSError):
+        # Covers PermissionError, model-cache I/O, etc. that aren't caught above
+        return "model_io_error"
+    return "embedder_error"
+
+
+def _embed_query_safe(raw: str) -> tuple[bytes | None, str | None]:
+    """Compute the dense query embedding, returning (bytes, None) on success
+    or (None, short_reason_code) on failure.
+
+    The reason code is one of a fixed set (see `_classify_embed_error`) so the
+    LLM-visible `_retrieval_warning` field never carries filesystem paths,
+    account slugs, or proxy URLs from raw exception messages. Full diagnostic
+    detail goes to structlog for the operator to read in logs.
+    """
+    try:
+        from ..indexer.embed import embed_query, to_sqlite_vec_bytes
+
+        return to_sqlite_vec_bytes(embed_query(raw)), None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "embed_query.failed",
+            exc_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return None, _classify_embed_error(exc)
 
 # Topic hint → md_id mapping. Mirrors check_compliance.py; keep them in sync.
 _TOPIC_TO_MD_ID: dict[str, str | None] = {
@@ -89,14 +143,13 @@ def search(
     md_id_filter = _TOPIC_TO_MD_ID.get(topic.lower()) if isinstance(topic, str) else None
     include_withdrawn = bool(filters.get("include_withdrawn", False))
 
-    # Best-effort dense embedding for hybrid fusion.
-    query_embedding: bytes | None = None
-    try:
-        from ..indexer.embed import embed_query, to_sqlite_vec_bytes
-
-        query_embedding = to_sqlite_vec_bytes(embed_query(raw))
-    except Exception:  # noqa: BLE001
-        query_embedding = None
+    # Best-effort dense embedding for hybrid fusion. If this fails, capture
+    # the reason and surface it to the caller via _retrieval_warning so the
+    # LLM knows recall is degraded — without this, a misconfigured corpus
+    # (dim mismatch, missing model, no internet for HF download) silently
+    # degrades to FTS5-only and the user has no signal that anything is
+    # wrong. Codex review caught the silent-degrade gap.
+    query_embedding, embed_error = _embed_query_safe(raw)
 
     rows = hybrid_search(
         conn,
@@ -108,6 +161,13 @@ def search(
     )
 
     response["retrieval"] = "hybrid" if query_embedding is not None else "sparse_only"
+    if embed_error is not None:
+        response["_retrieval_warning"] = (
+            "Dense retrieval is unavailable — falling back to FTS5 keyword "
+            f"matching only. Reason: {embed_error}. Recall may be degraded; "
+            "run `rbi-source-doctor` to diagnose. Full error logged on the server."
+        )
+        response["_retrieval_warning_code"] = embed_error
     response["results"] = [
         {
             "document_id": r["document_id"],
