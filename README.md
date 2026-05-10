@@ -13,8 +13,8 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that b
 
 Two ways to use it:
 
-- **Self-host in 3 lines** (recommended): `pip install rbi-source-mcp` + `rbi-source-fetch-corpus` + Claude Desktop config. Local stdio MCP, your data stays on your machine, no API keys. [Details ↓](#self-host)
-- **Try the hosted demo first:** `https://rbi-source.harshil.ai/mcp/` (free, no auth, no install). Good for evaluating before you install. [Client setup ↓](#connect-from-your-client)
+- **Use the hosted MCP** (default, zero install): point your client at `https://rbi-source.harshil.ai/mcp/`. Free, no auth, retrieval-only. [Client setup ↓](#connect-from-your-client)
+- **Self-host** (option, runs locally): `pip install rbi-source-mcp` + `rbi-source-fetch-corpus` + Claude Desktop config. Useful when you want your queries to stay on your machine, are working offline, or want to point the MCP at a custom corpus. [Details ↓](#self-host)
 
 > ⚠️ **Unofficial, community-maintained open-source tool.** RBI Source MCP is not affiliated with, endorsed by, or sponsored by the Reserve Bank of India. RBI® is a trademark of the Reserve Bank of India. For takedown or legal inquiries, open an issue.
 
@@ -41,21 +41,11 @@ Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-base-en-v1.5` 768-dim d
 
 ## Quick start
 
-Two paths. Self-host is the typical install; the hosted demo is here so you can evaluate before installing.
+Two paths. The hosted MCP is the default — zero install, just point your client at it. Self-host is there if you'd rather run it locally.
 
-### A. Self-host (3 lines, runs locally)
+### A. Use the hosted MCP (default, zero install)
 
-```bash
-pip install rbi-source-mcp                       # or: uv tool install / pipx install
-rbi-source-fetch-corpus                          # downloads ~80MB sigstore-signed corpus
-# Add to claude_desktop_config.json: {"mcpServers": {"rbi-source": {"command": "rbi-source-mcp"}}}
-```
-
-Defaults to the local `bge-base-en-v1.5` embedder (no API keys, no Cloudflare account). Your queries never leave the machine. [Full self-host guide ↓](#self-host)
-
-### B. Try the hosted demo (zero install)
-
-Want to evaluate the tool before installing? The maintainer runs a free, no-auth instance:
+The maintainer runs a free, no-auth instance:
 
 ```
 https://rbi-source.harshil.ai/mcp/
@@ -68,7 +58,19 @@ curl -sS https://rbi-source.harshil.ai/health
 # → {"version":"0.8.x","status":"ok","documents":803}
 ```
 
-For anything beyond evaluation — production use, sensitive queries, custom corpora — go with self-host above.
+Skip to [Connect from your client ↓](#connect-from-your-client) — that's all you need.
+
+### B. Self-host (optional, runs locally)
+
+Pick this if you want queries to stay on your machine, are working offline, or want to point the MCP at a custom corpus.
+
+```bash
+pip install rbi-source-mcp                       # or: uv tool install / pipx install
+rbi-source-fetch-corpus                          # downloads ~80MB sigstore-signed corpus
+# Add to claude_desktop_config.json: {"mcpServers": {"rbi-source": {"command": "rbi-source-mcp"}}}
+```
+
+Defaults to the local `bge-base-en-v1.5` embedder (no API keys, no Cloudflare account). [Full self-host guide ↓](#self-host)
 
 ### Connect from your client
 
@@ -221,7 +223,7 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
 
 ## Self-host
 
-Three lines, no Docker, no Cloudflare account, no crawling.
+If the hosted MCP at `rbi-source.harshil.ai` doesn't fit your needs (you want queries to stay local, are working offline, want to pin a specific corpus version, or want to fork the indexer), run it on your machine. Three lines, no Docker, no Cloudflare account, no crawling.
 
 ```bash
 # 1. Install (persistent — stays available across Claude Desktop restarts)
