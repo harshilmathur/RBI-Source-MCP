@@ -1,6 +1,6 @@
 [project]
 name = "rbi-source-mcp"
-version = "0.8.3"
+version = "0.8.4"
 description = "An MCP server for RBI Master Directions: version-aware, citation-first, knows what's withdrawn."
 readme = "README.md"
 requires-python = ">=3.11"

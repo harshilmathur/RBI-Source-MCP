@@ -4,6 +4,110 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### v0.8.4 — security hardening + corpus-release housekeeping
+
+Output of a deep security/QA audit (`/review`-driven, with codex + claude
+adversarial cross-checks) and follow-up corpus-release polish. No breaking
+changes for self-host users; the hosted instance picks up several
+defense-in-depth fixes.
+
+**Server hardening (`server_http.py`):**
+
+- **Rate-limit IP source is now operator-opted-in via `RBI_TRUSTED_PROXY_HEADERS`.**
+  The middleware previously trusted `cf-connecting-ip`, `fly-client-ip`,
+  and `x-forwarded-for` unconditionally — any client could send their own
+  XFF header and reset their per-IP bucket every request. The new env
+  var (comma-separated header names; default empty = peer IP) lets only
+  the operator decide which proxy headers are trusted. Hosted Dockerfile
+  ships `RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip` so the
+  Cloudflare → Fly chain still keys on the real client.
+- **OAuth ceremony has its own looser rate-limit bucket** (30 req/min)
+  instead of being fully exempt. Claude.ai's connector setup hits 5–8
+  endpoints; the bucket fits comfortably while still catching abuse.
+- **Eager DB validation at lifespan startup.** Re-raises on
+  `sqlite3.DatabaseError` so a corrupt-DB deploy crash-loops visibly to
+  the orchestrator instead of 500-storming until the first /health probe.
+  Empty-corpus + transient errors stay best-effort (logged, not raised).
+- **`allow_credentials=False`** pinned explicitly on CORS, with a comment
+  explaining why `allow_origins=["*"]` is correct for a public unauth
+  read-only MCP and why these two flags together are the only safe combo.
+
+**Server-stdio (`server.py`):**
+
+- `_run_stdio()` wrapped in try/finally calling `telemetry.shutdown()` so
+  queued PostHog events get flushed on Ctrl-C / SIGTERM / Claude Desktop
+  quit. HTTP path already did this; stdio was the asymmetric gap.
+
+**Tool responses (`mcp/search.py`, `mcp/check_compliance.py`):**
+
+- Dense-retrieval failures now surface a `_retrieval_warning` field in
+  the response so the LLM knows recall is degraded (was: silent fallback
+  to FTS5-only). Reason is mapped to a fixed code (`embedder_unavailable`,
+  `model_not_downloaded`, `dim_mismatch`, `cf_api_error`, `model_io_error`,
+  `embedder_error`); raw exception detail goes to structlog only, never
+  to the client transcript. Prevents leaking filesystem paths, HF cache
+  directories, account slugs, or proxy URLs through error messages.
+
+**Database (`db.py`):**
+
+- `search_chunks_fts` auto-escapes its `query` argument by default;
+  `pre_escaped=True` opt-out for callers that already escaped (avoids a
+  double-escape pass). Removes the contract risk of a future caller
+  forgetting `escape_fts5_query()` and being vulnerable to FTS5 boolean
+  syntax.
+
+**OAuth (`oauth.py`):**
+
+- Trimmed `token_endpoint_auth_methods_supported` to `["none"]` only.
+  The previous `["none", "client_secret_post"]` advertisement was
+  honest-looking but wrong: the token endpoint never honored
+  client_secret (PKCE-only). Strict OAuth clients now see metadata
+  that matches behavior.
+
+**GitHub Actions hardening:**
+
+- All workflow actions pinned to commit SHAs in `release.yml` and
+  `corpus-release.yml`. Tag-comments preserved (`# pin: <name>@<tag>`)
+  so Dependabot continues to surface upgrades. Locks the publishing
+  path against tag-retag attacks on `pypa/gh-action-pypi-publish` and
+  `sigstore/gh-action-sigstore-python`.
+- `pypa/gh-action-pypi-publish` re-pinned to a real tag (`v1.14.0`)
+  so Dependabot's tag matcher tracks it (was tracking the `release/v1`
+  branch which Dependabot can't follow).
+
+**Corpus-release housekeeping (`corpus-release.yml`):**
+
+- Workflow renamed from "Weekly corpus release" → "Corpus release
+  (daily diff + monthly full)" to match the actual cadence.
+- Release body completely rewritten: install commands, sigstore-verify
+  command (with exact identity), build-provenance table, smoke-gate
+  explanation, plus a machine-parseable `build_mode:` line for the GC
+  step. The previous body referenced unreleased v0.7.0/v0.7.1 docs.
+- `latest-corpus` alias body refreshed on every cron run (was: only set
+  on first creation, then frozen forever).
+- GC bucketing now reads `build_mode:` from the release body instead
+  of regex-on-tag-name. The old approach misclassified a daily run
+  that landed on the 1st of the month as monthly (since both daily
+  and monthly crons fire on the 1st with the same date prefix).
+- GC step pulls `tagName + body` in a single `gh release list` call
+  instead of N+1 `gh release view` per tag — future-proofs against GH
+  API rate limits as history accumulates.
+- Stale "weekly" docstrings/comments swept across `fetch_corpus.py`,
+  `db.py`, `crawler/refresh.py`, `eval/runner.py`, `eval/__init__.py`,
+  and `server_http.py`.
+
+**Tests:**
+
+- New `test_rate_limit_ignores_untrusted_proxy_headers` asserts the
+  spoofability guarantee — without an opt-in trusted-headers list,
+  forged `X-Forwarded-For` / `Fly-Client-IP` doesn't reset buckets.
+- `test_rate_limit_isolates_clients_by_ip` updated to pass
+  `trusted_proxy_headers=("fly-client-ip",)` explicitly.
+- `test_oauth_endpoints_excluded_from_rate_limit` rewritten to
+  `test_oauth_endpoints_use_separate_looser_bucket`: verifies the new
+  separate-bucket behavior (8 ceremony hits succeed, then the bucket
+  fills and 429s; main bucket is independent).
+
 ### v0.8.3 — refresh hosted homepage (docs-only patch)
 
 The static homepage at `src/rbi_source_mcp/static/index.html` (served at
