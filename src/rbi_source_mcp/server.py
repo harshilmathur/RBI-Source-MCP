@@ -18,6 +18,7 @@ The server reads the corpus DB from $RBI_SOURCE_DB (defaults to ./data/db.sqlite
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -504,13 +505,25 @@ def _configure_stdio_logging() -> None:
 
 
 async def _run_stdio() -> None:
-    """Run the server over stdio (for local Claude Desktop / Claude Code use)."""
+    """Run the server over stdio (for local Claude Desktop / Claude Code use).
+
+    Wrapped in try/finally so queued PostHog events get flushed even on
+    SIGTERM / Ctrl-C / Claude Desktop quit. Without the finally clause,
+    the daemon flush thread can be killed mid-batch and the last events
+    drop. Codex review caught this — HTTP path already calls
+    `telemetry.shutdown()` from its lifespan teardown; stdio was the
+    asymmetric gap. No-op for self-host installs (POSTHOG_API_KEY unset).
+    """
     _configure_stdio_logging()
     server = _build_server()
     logger.info("server.start", version=__version__, db=str(_resolve_db_path()))
-    async with stdio_server() as (read_stream, write_stream):
-        init_options = server.create_initialization_options()
-        await server.run(read_stream, write_stream, init_options)
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            init_options = server.create_initialization_options()
+            await server.run(read_stream, write_stream, init_options)
+    finally:
+        with contextlib.suppress(Exception):
+            telemetry.shutdown()
 
 
 def main() -> None:

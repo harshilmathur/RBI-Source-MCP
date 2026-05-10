@@ -28,9 +28,11 @@ name: Publish to PyPI
 #   3. Push a `v0.8.0` tag — first run will publish + retire the pending
 #      publisher into a permanent trusted publisher.
 #
-# Action pinning: tags below are tracked by Dependabot. Move to commit
-# SHA pinning in v0.9 if supply-chain risk warrants it (it would block
-# auto-applying a compromise of pypa/gh-action-pypi-publish, etc.).
+# Action pinning: pinned to commit SHAs (v0.9 hardening). Tag-pin tracked
+# next to each SHA in a `# pin: <action>@<tag>` comment so Dependabot's
+# action-name+tag matcher continues to surface upgrades. SHAs lock the
+# build against tag-retag attacks on the publishing path
+# (pypa/gh-action-pypi-publish, sigstore/gh-action-sigstore-python).
 
 on:
   push:
@@ -46,10 +48,10 @@ jobs:
     name: Build + sign distributions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # pin: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # pin: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -80,7 +82,7 @@ jobs:
       - name: Sigstore-sign wheel + sdist (BEFORE publish)
         # If this fails, the `build` job fails, downstream `publish` and
         # `attach-release` never run, so PyPI never sees an unsigned wheel.
-        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        uses: sigstore/gh-action-sigstore-python@f514d46b907ebcd5bedc05145c03b69c1edd8b46  # pin: sigstore/gh-action-sigstore-python@v3.0.0
         with:
           inputs: ./dist/*.tar.gz ./dist/*.whl
 
@@ -98,7 +100,7 @@ jobs:
         run: ls -la dist/
 
       - name: Upload artifacts (dist + sigstore bundles)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # pin: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
@@ -116,7 +118,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # pin: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
@@ -127,7 +129,7 @@ jobs:
         run: rm -f dist/*.sigstore.json
 
       - name: Publish via trusted publishing
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # pin: pypa/gh-action-pypi-publish@v1.14.0
         # No `password:` field — the action exchanges the GitHub Actions
         # OIDC token for a short-lived PyPI upload token. PyPI verifies
         # the OIDC identity matches the trusted publisher registered
@@ -147,7 +149,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # pin: actions/download-artifact@v4
         with:
           name: dist
           path: dist/

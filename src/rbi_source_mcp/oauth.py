@@ -148,9 +148,13 @@ async def protected_resource_metadata(request: Request) -> JSONResponse:
 async def authorization_server_metadata(request: Request) -> JSONResponse:
     """RFC 8414 OAuth 2.0 Authorization Server Metadata.
 
-    Advertises every endpoint Claude.ai will probe. token_endpoint_auth_methods
-    includes "none" because we accept public clients (PKCE-only, no client
-    secret), which is the OAuth 2.1 default for browser-class clients.
+    Advertises every endpoint Claude.ai will probe.
+    `token_endpoint_auth_methods_supported` is `["none"]` only — public
+    clients with PKCE, OAuth 2.1 default for browser-class clients. We
+    deliberately don't claim `client_secret_post`: the /token endpoint
+    has no client_secret verification (since registration always returns
+    `token_endpoint_auth_method: none` and the corpus is public). Codex
+    review caught the over-claim — interop debt for strict OAuth clients.
     """
     base = _public_base(request)
     return JSONResponse(
@@ -164,7 +168,7 @@ async def authorization_server_metadata(request: Request) -> JSONResponse:
             "response_modes_supported": ["query"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256", "plain"],
-            "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+            "token_endpoint_auth_methods_supported": ["none"],
             "service_documentation": f"{base}/",
         }
     )

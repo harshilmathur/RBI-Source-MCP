@@ -296,18 +296,44 @@ async def test_authorize_code_is_one_shot() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oauth_endpoints_excluded_from_rate_limit() -> None:
-    """Claude.ai hits the OAuth endpoints multiple times per connection.
-    They MUST be excluded from the per-IP rate limit, otherwise a real
-    MCP client immediately gets 429'd after Claude's discovery walk."""
-    from rbi_source_mcp.server_http import RATE_LIMIT_PER_WINDOW, build_asgi_app
+async def test_oauth_endpoints_use_separate_looser_bucket() -> None:
+    """Claude.ai's connector hits the OAuth ceremony 5-8x per setup. They
+    must NOT count against the main per-IP budget (real MCP traffic right
+    after the handshake would 429 immediately). But they also must not be
+    fully exempt — codex review caught the unlimited-OAuth DoS gap.
+
+    Behavior under test: OAuth endpoints share their own bucket
+    (OAUTH_RATE_LIMIT_PER_WINDOW=30), independent from the main bucket.
+    The connector ceremony fits comfortably; real MCP traffic afterwards
+    is unaffected; an attacker hammering /token/`/authorize` still gets
+    429 once the OAuth bucket fills.
+    """
+    from rbi_source_mcp.server_http import (
+        OAUTH_RATE_LIMIT_PER_WINDOW,
+        RATE_LIMIT_PER_WINDOW,
+        build_asgi_app,
+    )
 
     app = build_asgi_app()
     async with LifespanManager(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            # Slam the discovery endpoint past the rate-limit budget; none
-            # should 429.
-            for _ in range(RATE_LIMIT_PER_WINDOW + 5):
+            # 1. Realistic OAuth ceremony (8 hits) succeeds.
+            for _ in range(8):
                 r = await client.get("/.well-known/oauth-authorization-server")
                 assert r.status_code == 200, f"got {r.status_code}: {r.text[:200]}"
+
+            # 2. Slam past the OAuth bucket cap → 429 eventually arrives.
+            saw_429 = False
+            for _ in range(OAUTH_RATE_LIMIT_PER_WINDOW + 5):
+                r = await client.get("/.well-known/oauth-authorization-server")
+                if r.status_code == 429:
+                    saw_429 = True
+                    break
+            assert saw_429, "OAuth endpoints must enforce a separate looser limit"
+
+            # 3. Main bucket is independent — /health stays clean (excluded
+            # entirely). Sanity-check the bucket separation.
+            assert RATE_LIMIT_PER_WINDOW > OAUTH_RATE_LIMIT_PER_WINDOW
+            r = await client.get("/health")
+            assert r.status_code in (200, 503)  # excluded from rate limit
