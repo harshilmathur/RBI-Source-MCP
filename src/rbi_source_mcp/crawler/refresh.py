@@ -1,6 +1,7 @@
 """Refresh pipeline: orchestrates crawls and writes the corpus DB.
 
-This is the script the weekly GitHub Action runs. It:
+This is the script the corpus-release GitHub Action runs (daily diff +
+monthly full). It:
 
     1. Crawls the Master Directions list page.
     2. Crawls the withdrawn-circulars list page.
