@@ -20,12 +20,12 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
-from ..db import escape_fts5_query, hybrid_search
-# Reuse the shared safe-embed helper from search.py — both tools need
+# Reuse the shared safe-embed helper from mcp/search.py — both tools need
 # identical reason-code mapping so a degraded retrieval path looks the
 # same regardless of which tool the LLM called. The previous duplication
 # rationale ("circular import") was wrong; mcp/search → indexer.embed,
 # this module → mcp/search → indexer.embed has no cycle.
+from ..db import escape_fts5_query, hybrid_search
 from .search import _embed_query_safe
 
 

@@ -18,6 +18,7 @@ The server reads the corpus DB from $RBI_SOURCE_DB (defaults to ./data/db.sqlite
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -521,10 +522,8 @@ async def _run_stdio() -> None:
             init_options = server.create_initialization_options()
             await server.run(read_stream, write_stream, init_options)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             telemetry.shutdown()
-        except Exception:  # noqa: BLE001
-            pass
 
 
 def main() -> None:
