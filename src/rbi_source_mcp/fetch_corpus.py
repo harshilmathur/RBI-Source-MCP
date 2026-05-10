@@ -1,9 +1,10 @@
 """Download a prebuilt corpus from GitHub Releases.
 
-The weekly `corpus-release.yml` workflow publishes a compressed corpus
-SQLite (`corpus.sqlite.xz`) plus a SHA256 checksum and (when sigstore
-signing is configured) a sigstore bundle, to two release tags:
-    - `latest-corpus` — moving alias updated in place each week (default)
+The `corpus-release.yml` workflow publishes a compressed corpus
+SQLite (`corpus.sqlite.xz`) plus a SHA256 checksum and a sigstore bundle
+to two release tags. Cadence: daily diff at 02:00 UTC + monthly full
+rebuild on the 1st at 03:00 UTC.
+    - `latest-corpus` — moving alias updated in place each run (default)
     - `corpus-YYYY-MM-DD-<run_id>` — immutable timestamped builds
 
 This script downloads the corpus, verifies SHA256, optionally verifies
@@ -287,7 +288,7 @@ def _verify_sigstore(asset: Path, bundle: Path, *, repo: str) -> None:
         verifier = Verifier.production()  # GitHub Sigstore root
         bundle_obj = Bundle.from_json(bundle.read_text())
         # Identity binds the bundle to "this workflow on this repo".
-        # For our weekly release: identity issued by GitHub Actions OIDC
+        # For our daily/monthly corpus release: identity issued by GitHub Actions OIDC
         # for `corpus-release.yml` on the {repo}'s `main` branch.
         policy = Identity(
             identity=f"https://github.com/{repo}/.github/workflows/corpus-release.yml@refs/heads/main",
@@ -618,7 +619,7 @@ def main() -> None:
     parser.add_argument(
         "--tag", default=DEFAULT_TAG,
         help=(
-            f"Release tag (default: {DEFAULT_TAG} — moving alias to the latest weekly build). "
+            f"Release tag (default: {DEFAULT_TAG} — moving alias updated daily). "
             "Use a corpus-YYYY-MM-DD-<run_id> tag for an immutable pin."
         ),
     )

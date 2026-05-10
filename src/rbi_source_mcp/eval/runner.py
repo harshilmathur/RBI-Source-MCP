@@ -2,7 +2,7 @@
 
 Two entry points:
     1. Python API (`evaluate(db_path)`) — used by tests/test_eval.py for CI.
-    2. CLI (`rbi-source-eval`) — for ad-hoc runs and the weekly refresh smoke test.
+    2. CLI (`rbi-source-eval`) — for ad-hoc runs and the corpus-release smoke gate.
 
 Each case passes when AT LEAST ONE provision in the top-N retrieval results
 satisfies (expected_md_id matches) AND (anchor_prefix matches OR text contains

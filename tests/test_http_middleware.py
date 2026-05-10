@@ -163,7 +163,16 @@ async def test_rate_limit_isolates_clients_by_ip() -> None:
         return JSONResponse({"ok": True})
 
     app = Starlette(routes=[Route("/mcp/{path:path}", echo, methods=["POST"])])
-    app.add_middleware(RateLimitMiddleware, limit=2, window_s=60.0)
+    # Explicitly opt into the Fly-Client-IP header. The middleware default
+    # is empty (peer IP only) so any caller can't spoof XFF; tests that
+    # exercise proxy-header behavior pass the trusted set explicitly,
+    # mirroring the production Dockerfile env config.
+    app.add_middleware(
+        RateLimitMiddleware,
+        limit=2,
+        window_s=60.0,
+        trusted_proxy_headers=("fly-client-ip",),
+    )
     app.add_middleware(MaxBodySizeMiddleware)
 
     transport = httpx.ASGITransport(app=app)
@@ -178,3 +187,43 @@ async def test_rate_limit_isolates_clients_by_ip() -> None:
         # IP B is unaffected.
         r = await client.post("/mcp/x", json={"i": 0}, headers={"Fly-Client-IP": "10.0.0.2"})
         assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_ignores_untrusted_proxy_headers() -> None:
+    """Without an opt-in trusted-proxy-header list, the middleware must
+    fall back to peer IP. Otherwise any client could spoof X-Forwarded-For
+    to reset its bucket per-request. Codex review #M1 — this is the
+    spoofability guarantee.
+    """
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    from rbi_source_mcp.server_http import RateLimitMiddleware
+
+    async def echo(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/mcp/{path:path}", echo, methods=["POST"])])
+    # No trusted_proxy_headers passed — middleware uses peer IP only.
+    app.add_middleware(RateLimitMiddleware, limit=2, window_s=60.0, trusted_proxy_headers=())
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # Spoof a different XFF on every request — same peer (127.0.0.1),
+        # so all three requests must share the same bucket and the third
+        # one must be rate-limited.
+        for i in range(2):
+            r = await client.post(
+                "/mcp/x",
+                json={"i": i},
+                headers={"X-Forwarded-For": f"10.0.0.{i}", "Fly-Client-IP": f"10.0.0.{i}"},
+            )
+            assert r.status_code == 200
+        r = await client.post(
+            "/mcp/x",
+            json={"i": 99},
+            headers={"X-Forwarded-For": "10.0.0.99", "Fly-Client-IP": "10.0.0.99"},
+        )
+        assert r.status_code == 429

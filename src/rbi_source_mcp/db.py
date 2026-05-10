@@ -13,7 +13,8 @@ Schema:
     chunks_vec         -- sqlite-vec virtual table, 384-dim float32 (dense)
     pdf_artifacts      -- audit trail of PDF fetches and extractions
 
-The DB file is rebuilt by the weekly GitHub Action. Self-hosters can
+The DB file is rebuilt by the daily corpus-release GitHub Action
+(plus a monthly full rebuild on the 1st). Self-hosters can
 download `corpus.sqlite.xz` from the [latest-corpus release](https://github.com/harshilmathur/RBI-Source-MCP/releases/tag/latest-corpus)
 manually for now (v0.7.1 will ship a `rbi-source-fetch-corpus` console
 script for one-line install).
@@ -579,17 +580,27 @@ def search_chunks_fts(
     limit: int = 5,
     md_id: str | None = None,
     include_withdrawn: bool = False,
+    pre_escaped: bool = False,
 ) -> list[sqlite3.Row]:
     """FTS5 search over chunks.
 
     Returns up to `limit` rows ordered by BM25 rank (lower is better).
-    `query` is passed to FTS5 directly; callers should escape user input
-    with `_escape_fts5_query` to avoid syntax errors on punctuation.
+
+    `query` is passed to FTS5's MATCH operator. By default the query is
+    auto-escaped via `escape_fts5_query()` to neutralize FTS5 boolean
+    syntax (AND/OR/NOT, column filters, NEAR, etc.) so user input can't
+    rewrite the query semantics. Callers that have already escaped the
+    string (e.g. `mcp/search.py` and `mcp/check_compliance.py`, which
+    short-circuit to `'""'` for empty-token inputs) can pass
+    `pre_escaped=True` to skip the redundant pass. Codex review:
+    auto-escape inside the function so a future caller can't forget.
 
     `include_withdrawn` is reserved for when we attach status to chunks via
     the documents table at query time. v0.1.5 only indexes current MDs, so
     everything returned is current.
     """
+    if not pre_escaped:
+        query = escape_fts5_query(query)
     sql = """
         SELECT
             c.chunk_id,
@@ -709,6 +720,11 @@ def hybrid_search(
         limit=fetch_per_side,
         md_id=md_id,
         include_withdrawn=include_withdrawn,
+        # mcp/search.py and mcp/check_compliance.py already call
+        # escape_fts5_query() before invoking hybrid_search (their early
+        # short-circuit on the `'""'` no-tokens case relies on the escape
+        # output). Passing through avoids a redundant re-escape pass.
+        pre_escaped=True,
     )
     dense: list[sqlite3.Row] = []
     if query_embedding is not None:

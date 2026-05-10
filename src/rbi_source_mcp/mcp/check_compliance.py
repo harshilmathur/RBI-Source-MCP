@@ -20,7 +20,13 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
+# Reuse the shared safe-embed helper from mcp/search.py — both tools need
+# identical reason-code mapping so a degraded retrieval path looks the
+# same regardless of which tool the LLM called. The previous duplication
+# rationale ("circular import") was wrong; mcp/search → indexer.embed,
+# this module → mcp/search → indexer.embed has no cycle.
 from ..db import escape_fts5_query, hybrid_search
+from .search import _embed_query_safe
 
 
 def check_compliance(
@@ -93,15 +99,10 @@ def check_compliance(
     md_id_filter = _md_id_for_topic_hint(topic_hint)
 
     # Compute the dense query embedding. Best-effort: if the embedder fails
-    # (model not downloaded, etc.), hybrid_search falls back to FTS5-only.
-    query_embedding: bytes | None = None
-    try:
-        from ..indexer.embed import embed_query, to_sqlite_vec_bytes
-
-        query_vec = embed_query(raw)
-        query_embedding = to_sqlite_vec_bytes(query_vec)
-    except Exception:  # noqa: BLE001
-        query_embedding = None
+    # (model not downloaded, dim mismatch, no internet), capture the reason
+    # and surface it via _retrieval_warning so the LLM knows recall is
+    # degraded. Codex review caught the silent-degrade gap.
+    query_embedding, embed_error = _embed_query_safe(raw)
 
     rows = hybrid_search(
         conn,
@@ -115,6 +116,13 @@ def check_compliance(
     provisions = [_row_to_provision(r) for r in rows]
     response["relevant_provisions"] = provisions
     response["retrieval"] = "hybrid" if query_embedding is not None else "sparse_only"
+    if embed_error is not None:
+        response["_retrieval_warning"] = (
+            "Dense retrieval is unavailable — falling back to FTS5 keyword "
+            f"matching only. Reason: {embed_error}. Recall may be degraded; "
+            "run `rbi-source-doctor` to diagnose. Full error logged on the server."
+        )
+        response["_retrieval_warning_code"] = embed_error
 
     # Low-confidence signal — calibrated empirically against the corpus:
     #
