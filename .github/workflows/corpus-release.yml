@@ -472,24 +472,31 @@ jobs:
           KEEP_DAILY=14
           KEEP_MONTHLY=12
 
-          # All corpus-* timestamped tags (newest first, alias excluded).
-          # Pull tagName + body in ONE API call and let jq extract the
+          # Pull tag_name + body in ONE API call and let jq extract the
           # build_mode straight from the body. The previous loop did
           # `gh release view <tag> --json body` per tag — N+1 against the
           # GH API that would hit the 1000 req/hour secondary limit once
-          # history grew. Codex review caught it.
+          # history grew.
+          #
+          # NOTE: this uses `gh api .../releases` (REST) instead of
+          # `gh release list --json body` because `body` is NOT a valid
+          # field for `gh release list` — only for `gh release view`. The
+          # first attempt (run 25652776520, 2026-05-11) failed with
+          # `Unknown JSON field: "body"` because the local jq sanity check
+          # in the original PR used synthetic data, not the real API
+          # schema. REST returns snake_case (`.tag_name`, not `.tagName`);
+          # `--paginate` walks all pages so old timestamped corpus tags
+          # are included once the candidate set grows past one page.
           #
           # Output format: "<tag>\t<mode>" where mode is diff | full | unknown.
-          gh release list \
-            --repo "$GITHUB_REPOSITORY" \
-            --limit 500 \
-            --json tagName,body \
+          gh api -X GET --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
             --jq '
               .[]
-              | select(.tagName | startswith("corpus-"))
-              | select(.tagName != "latest-corpus")
+              | select(.tag_name | startswith("corpus-"))
+              | select(.tag_name != "latest-corpus")
               | [
-                  .tagName,
+                  .tag_name,
                   (((.body // "") | capture("(?m)^build_mode:[[:space:]]*(?<m>diff|full)")? // {m: "unknown"}) | .m)
                 ]
               | @tsv
