@@ -326,7 +326,7 @@ jobs:
         # by the GC step downstream — bucket diff (daily) vs full (monthly)
         # without relying on tag-name regex (which misclassified a daily
         # run on the 1st of the month as monthly; codex caught it).
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # pin: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # pin: softprops/action-gh-release@v3.0.0
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.name }}
