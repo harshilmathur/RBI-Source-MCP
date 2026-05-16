@@ -11,10 +11,13 @@ entire RBI corpus. **Retrieval-only by design** — never issues compliance
 verdicts. The legal posture (no-legal-advice disclaimer on every response)
 is load-bearing; do not change it without explicit user direction.
 
-**Status as of v0.8.1 (2026-05-05):** public OSS repo, published on PyPI
+**Status as of v0.8.4 (2026-05-15):** public OSS repo, published on PyPI
 (`pip install rbi-source-mcp`), corpus distributed via signed GitHub
-Releases. Maintainer's hosted demo runs at `rbi-source.harshil.ai`.
-Three-line install works end-to-end for any user.
+Releases. Maintainer's hosted demo runs at `rbi-source.harshil.ai` and
+**self-heals the corpus automatically** (in-container sigstore-verified
+sidecar polls `latest-corpus` every 6h). Three-line install works
+end-to-end for any user. SHA-pinned every GHA workflow action, wired
+Dependabot, audited end-to-end via /review + codex adversarial.
 
 ## Key files
 
@@ -84,7 +87,10 @@ scripts/                     Ops + research tooling, not shipped in the runtime 
   ├─ eval_dump.py + compare_ab.py + compare_3way.py   Embedding-model bake-off
   (Deploy/QA scripts moved to ~/code/rbi-source-mcp-deploy/ in v0.7.0.)
 
-tests/                       122 unit tests passing, 3 skipped (94 baseline + 28 fetch_corpus)
+tests/                       126 unit tests passing, 3 skipped (94 baseline +
+                             28 fetch_corpus + 2 rate-limit + 2 OAuth-bucket;
+                             new ones land in test_http_middleware.py +
+                             test_oauth.py guarding the v0.8.4 security fixes)
 data/db.sqlite              ~250 MB at 768-dim; ~803 docs, ~57k chunks (drifts daily)
 ```
 
@@ -97,8 +103,30 @@ proxied).
 - Endpoints: `GET /` (banner), `GET /health` (deep check, 503 on
   empty corpus / sqlite-vec missing degrades to 200 + `degraded: true`),
   `POST /mcp/` (streamable-HTTP).
-- Deploy machinery (fly.toml, Dockerfile, refresh scripts) lives in the
-  private `~/code/rbi-source-mcp-deploy/` repo, not in this OSS tree.
+- **In-container auto-update sidecar (v0.8.4+):** `refresh-corpus-local.sh`
+  forks from the entrypoint as the rbi user and polls `latest-corpus`
+  every 6h (jittered ±5%). Skip-fast on unchanged SHA; on new build,
+  downloads + verifies SHA256 + cosign sigstore (pinned to exact
+  `corpus-release.yml@refs/heads/main` workflow identity) + atomic-swaps
+  onto the volume. Fly logs prefix the events with `[refresher]`. The
+  v0.8.4 design notes: the operator-driven `deploy-corpus.sh` is now the
+  manual fallback path; the sidecar is the default.
+- Deploy machinery (fly.toml, Dockerfile, both refresh scripts) lives
+  in the private `~/code/rbi-source-mcp-deploy/` repo, not in this OSS
+  tree.
+
+**Version-lockstep contracts the hosted instance depends on:**
+- `cosign` (in the deploy image) must read the bundle format produced
+  by `sigstore/gh-action-sigstore-python` (in `corpus-release.yml`).
+  v3 of sigstore-python writes bundle v0.3, which only cosign 3.x can
+  read. If the OSS workflow's `sigstore/gh-action-sigstore-python`
+  major version moves, bump the `COSIGN_VERSION` ARG in the deploy
+  Dockerfile in the same PR.
+- `RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip` is set in
+  the deploy Dockerfile so `server_http.py`'s rate-limit middleware keys
+  on the real client IP (Cloudflare → Fly chain). Self-host installs
+  leave this unset and use peer IP, which is correct for stdio / local
+  binding.
 
 ## Console scripts
 
@@ -187,7 +215,7 @@ All scripts use `RBI_SOURCE_DB` env var (defaults to `./data/db.sqlite`).
 ## Testing
 
 ```bash
-uv run pytest -q                 # 122 unit tests (94 baseline + 28 fetch_corpus)
+uv run pytest -q                 # 126 unit tests pass, 3 skipped
 uv run ruff check src/ tests/    # lint, must be clean
 uv run rbi-source-eval           # corpus quality gate (must pass at ≥80%)
 ```
@@ -225,16 +253,21 @@ publish on ≥80% absolute AND <5pp regression vs the prior release's eval.
 | HTTP transport for hosted mode | ✓ landed — server_http.py + rbi-source-mcp-http console script |
 | Corpus build → GitHub Releases | ✓ corpus-release.yml: daily 02:00 UTC diff + monthly 1st-of-month full; bootstrap completed 2026-05-05; switched from weekly→daily on 2026-05-05 |
 | `rbi-source-fetch-corpus` + `rbi-source-doctor` | ✓ landed in v0.8 |
-| Press Releases archive (5y backfill) | **Next up — PR3.** Date-window POST-form walker not yet built |
-| RBI Speeches | Deferred — single-page list, ~few hundred entries |
-| Notifications archive (thousands of docs) | Deferred — separate from PRs/standalone-circulars |
+| **Hosted-instance corpus auto-update** | ✓ landed in v0.8.4 — in-container sidecar polls latest-corpus every 6h, sigstore-verifies, atomic-swaps. Previously required a manual `deploy-corpus.sh` invocation; drifted 10 days between May 5 and May 15 before catching the gap. |
+| **GHA actions pinned to commit SHAs** | ✓ landed in v0.8.4 — publishing path locked; Dependabot at `.github/dependabot.yml` tracks the `# pin: <name>@<tag>` comments. ci.yml uses tag-based pin (acceptable for non-publishing CI) |
+| **Hosted instance security hardening** | ✓ landed in v0.8.4 — env-gated rate-limit IP (`RBI_TRUSTED_PROXY_HEADERS`), OAuth bucket separation, dim-mismatch warning surfaced, eager DB validation, FTS5 escape internalized, OAuth metadata trimmed to honest set, allow_credentials=False explicit |
+| Press Releases (last 50, no historical backfill) | ✓ live — `BS_PressReleaseDisplay.aspx` top-50 only, by user direction (the page itself doesn't expose deeper history) |
+| Acts & Regulations (statutes) | **Next up — proposed v0.9.** Closes the "statute < MD < amendment" layering for compliance answers. ~10 statutes, low volume, stable |
+| RBI Speeches | Deferred — user signal explicitly against (low compliance signal vs noise) |
+| Notifications archive (umbrella feed since 1991) | Deferred — research showed mostly-redundant with what we have (MDs + Standalones); long tail is operational/agency-banking ops, low compliance signal |
+| Amendment Directions | Skipped after research — RBI re-uploads MDs in-place with consolidated text, so amendments are history-only. Current state of every rule is already in our MD index |
 | `document_versions` (history) | Currently only stores current state |
 | Amendment chain extraction | Blocks `find_updates` + `trace_relationships` tools |
 | OCR pipeline for scanned MDs | Currently excluded with `excluded: ocr_required` flag |
 | Public stats page from telemetry | PostHog dashboard exists for maintainer; public page not built |
 | `compare_versions` tool | Blocked on `document_versions` |
 | `find_updates` tool | Blocked on amendment-chain extraction |
-| GHA actions pinned to commit SHAs | Currently moving tags (`@v4`, `@release/v1`); pin in v0.9 |
+| MCP Registry submissions | Content prepared at `.gstack/mcp-registry-submissions.md`; user click-through pending |
 
 ## Project memory
 
