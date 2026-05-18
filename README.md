@@ -258,15 +258,9 @@ Should print all-green. If anything fails, the output tells you the specific fix
 claude mcp add rbi-source -s user -- rbi-source-mcp
 ```
 
-### Pin a corpus version (optional)
+### Pin a specific corpus build (advanced)
 
-`rbi-source-fetch-corpus` defaults to the moving `latest-corpus` release. For reproducible deploys, pin to an immutable timestamped tag:
-
-```bash
-rbi-source-fetch-corpus --tag corpus-2026-05-04-1234567
-```
-
-Browse available tags at [github.com/harshilmathur/RBI-Source-MCP/releases](https://github.com/harshilmathur/RBI-Source-MCP/releases).
+`rbi-source-fetch-corpus` always pulls the moving `latest-corpus` release — that's the only on-disk corpus the project publishes. If you need a specific historical corpus for a reproducible deploy or a forensic comparison, every successful run of [`corpus-release.yml`](.github/workflows/corpus-release.yml) attaches a `corpus.sqlite.xz` artifact (30-day retention) you can download from the workflow run page. The build's `corpus_meta` table stamps `build_commit`, `build_run_id`, and the embedding configuration inside the SQLite itself, so a corpus is forensically self-identifying once on disk.
 
 ### Cryptographic verification (optional)
 
