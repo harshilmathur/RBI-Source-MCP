@@ -175,3 +175,34 @@ jobs:
             ./dist/*.tar.gz \
             ./dist/*.whl \
             ./dist/*.sigstore.json
+
+      - name: Demote prior `v*` releases to prerelease
+        # GitHub auto-promotes the most recent non-prerelease tag to
+        # [LATEST]. With multiple v0.x.y releases sitting at "release"
+        # tier, the Releases page shows 5 indistinguishable entries
+        # instead of "v0.8.4 (latest) plus historical context". This
+        # step keeps the page focused on the just-published tag: every
+        # OLDER `v*` release gets marked prerelease, so only the current
+        # one shows the [LATEST] badge + appears in the homepage sidebar
+        # widget + matches the /releases/latest redirect.
+        #
+        # Filter rules:
+        #   - tagName starts with "v" — software releases only, never
+        #     touches the corpus-* tags (which are already prerelease)
+        #   - tagName != current tag — don't demote ourselves
+        #   - isPrerelease == false — skip ones already flipped (idempotent
+        #     if this step ever runs twice for the same tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 200 \
+            --json tagName,isPrerelease \
+            --jq ".[] | select(.tagName | startswith(\"v\")) | select(.tagName != \"$TAG\") | select(.isPrerelease == false) | .tagName" \
+            | while read -r older; do
+                echo "::notice::demoting prior release to prerelease: $older"
+                gh release edit "$older" --repo "$GITHUB_REPOSITORY" --prerelease
+              done
