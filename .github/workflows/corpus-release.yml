@@ -412,23 +412,30 @@ jobs:
           EOF
           )
 
+          # Title carries the build date so the Releases-page list shows
+          # at-a-glance "when was this last updated". GitHub's "X hours
+          # ago" timestamp is unreliable on edit-only-no-republish
+          # releases — it stays frozen at the original published_at.
+          # Baking the date into the title makes the freshness signal
+          # durable and visible in every place GitHub renders a release
+          # (sidebar widget, /releases page list, atom feeds, etc.).
+          TITLE="Corpus ${BUILD_DATE} (\`latest-corpus\`, refreshed daily)"
+
           if ! gh release view latest-corpus --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create latest-corpus \
               --repo "$GITHUB_REPOSITORY" \
               --target main \
               --prerelease \
-              --title "Corpus (always-current, refreshed daily)" \
+              --title "$TITLE" \
               --notes "$NOTES"
           else
-            # Re-set title + notes every run. The title carries no date
-            # (it's the alias) so it's static, but we still issue --title
-            # in case a prior manual edit ever drifted it. --prerelease
-            # is reinforced every run so a stray `gh release edit` can't
-            # promote the alias to [LATEST] accidentally.
+            # Re-set title + notes every run. --prerelease is reinforced
+            # every run so a stray `gh release edit` can't promote the
+            # alias to [LATEST] accidentally.
             gh release edit latest-corpus \
               --repo "$GITHUB_REPOSITORY" \
               --prerelease \
-              --title "Corpus (always-current, refreshed daily)" \
+              --title "$TITLE" \
               --notes "$NOTES"
           fi
 
