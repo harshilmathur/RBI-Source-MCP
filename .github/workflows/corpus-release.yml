@@ -328,6 +328,17 @@ jobs:
         # run on the 1st of the month as monthly; codex caught it).
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # pin: softprops/action-gh-release@v3.0.0
         with:
+          # Mark every corpus release as a pre-release. This is the
+          # signal to GitHub that these are NOT the canonical "software
+          # release" for the repo — keeps the [LATEST] badge on the
+          # actual v0.x.y tag from release.yml, hides corpus tags from
+          # the homepage sidebar widget, and from the "Latest" filter
+          # on the Releases page. The corpus tags stay fully accessible
+          # via direct URL + `gh release list --include-pre-releases`
+          # for anyone pinning to a specific build, and the auto-update
+          # sidecar still polls the `latest-corpus` alias unchanged
+          # (it uses the direct CDN URL, not the UI promotion).
+          prerelease: true
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.name }}
           body: |
@@ -421,17 +432,27 @@ jobs:
           See the latest timestamped release for full build provenance, smoke-gate results, and verification instructions.
           EOF
           )
+          # --prerelease: same rationale as the timestamped publish step
+          # above. The alias is NOT the software release; pinning it as
+          # prerelease keeps the [LATEST] badge on the actual v0.x.y
+          # tag from release.yml. The sidecar that polls this alias uses
+          # the direct asset CDN URL, so the UI flag has zero impact on
+          # consumption.
           if ! gh release view latest-corpus --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create latest-corpus \
               --repo "$GITHUB_REPOSITORY" \
               --target main \
+              --prerelease \
               --title "Latest corpus (alias)" \
               --notes "$ALIAS_NOTES"
           else
             # Refresh the alias body each run so changes to the install
             # / verification text propagate without a one-off manual edit.
+            # --prerelease ensures the flag stays set even if a prior run
+            # (or a manual `gh release edit`) ever cleared it.
             gh release edit latest-corpus \
               --repo "$GITHUB_REPOSITORY" \
+              --prerelease \
               --notes "$ALIAS_NOTES"
           fi
           gh release upload latest-corpus \
