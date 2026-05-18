@@ -2,19 +2,24 @@
 
 The `corpus-release.yml` workflow publishes a compressed corpus
 SQLite (`corpus.sqlite.xz`) plus a SHA256 checksum and a sigstore bundle
-to two release tags. Cadence: daily diff at 02:00 UTC + monthly full
-rebuild on the 1st at 03:00 UTC.
-    - `latest-corpus` — moving alias updated in place each run (default)
-    - `corpus-YYYY-MM-DD-<run_id>` — immutable timestamped builds
+to a single `latest-corpus` release whose assets are clobber-replaced
+on every successful build. Cadence: daily diff at 02:00 UTC + monthly
+full rebuild on the 1st at 03:00 UTC.
 
 This script downloads the corpus, verifies SHA256, optionally verifies
 the sigstore signature, decompresses the SQLite, opens it to confirm
 schema_version matches the running package, and atomically renames it
 into place.
 
+Per-build forensics: each corpus stamps `build_commit`, `build_run_id`,
+and embedding details into the `corpus_meta` table inside the SQLite,
+so a corpus is self-identifying once on disk. To grab a specific
+historical build, use the 30-day workflow-artifact retention on the
+corpus-release.yml run page; the public release surface only carries
+the latest by design (keeps the Releases page focused on software).
+
 Usage:
     rbi-source-fetch-corpus                          # latest, default destination
-    rbi-source-fetch-corpus --tag corpus-2026-05-04-1234567
     rbi-source-fetch-corpus --to /custom/path/db.sqlite
     rbi-source-fetch-corpus --no-verify-sigstore     # SHA256 only (default)
     rbi-source-fetch-corpus --verify-sigstore        # opt-in: cryptographic verify
@@ -619,8 +624,10 @@ def main() -> None:
     parser.add_argument(
         "--tag", default=DEFAULT_TAG,
         help=(
-            f"Release tag (default: {DEFAULT_TAG} — moving alias updated daily). "
-            "Use a corpus-YYYY-MM-DD-<run_id> tag for an immutable pin."
+            f"Release tag (default: {DEFAULT_TAG} — single moving release, "
+            "asset-replaced on every successful build). The flag is kept for "
+            "operator override (e.g. testing a forked workflow that publishes "
+            "to a different tag), but the canonical use is always the default."
         ),
     )
     parser.add_argument(

@@ -1,6 +1,6 @@
 name: Corpus release (daily diff + monthly full)
 
-# Pipeline (v0.7+):
+# Pipeline:
 #   1. Seed staging DB from the previous corpus release (diff mode only)
 #      so the indexers can skip unchanged PDFs via the content-hash JOIN
 #      in build_all.py:already_indexed_ids().
@@ -11,19 +11,26 @@ name: Corpus release (daily diff + monthly full)
 #      embedding model + revision, schema version).
 #   5. Smoke gate paired: rbi-source-eval ≥80% absolute AND <5pp drop
 #      vs the previous release's pass rate.
-#   6. On smoke pass: compress with xz, sigstore-sign, publish as a
-#      GitHub Release asset. Self-hosters consume via
-#      `rbi-source-fetch-corpus`; the maintainer's hosted instance pulls
-#      via the deploy-corpus.sh script in the private deploy repo.
-#   7. On smoke fail: abort, upload artifact for inspection, no release.
+#   6. On smoke pass: compress with xz, sigstore-sign, clobber-update
+#      the SINGLE `latest-corpus` GitHub Release. Self-hosters consume
+#      via `rbi-source-fetch-corpus` (defaults to latest-corpus); the
+#      maintainer's hosted instance's in-container refresher sidecar
+#      also polls latest-corpus directly.
+#   7. On smoke fail: abort, upload workflow artifact for inspection,
+#      no release update.
+#
+# Release-page philosophy: the Releases page is curated for software
+# consumers. Per-day timestamped corpus tags used to clutter the page
+# (one new entry per cron run, even with prerelease flagging). Collapsed
+# 2026-05-18 to a single `latest-corpus` release whose body + assets
+# are rewritten every successful build. Forensics on prior builds:
+#   - corpus_meta inside the SQLite carries build_commit, build_run_id,
+#     build_mode, embedding info, schema_version
+#   - The 30-day workflow artifact retention preserves the corpus + eval
+#     for every run, accessible from this workflow's run history page
 #
 # Cost: ~$0 in diff mode (~50 CF Neurons/week; quota is 10k/day free).
 # Full mode (monthly safety net) is ~3000 Neurons, still well under cap.
-#
-# This workflow REPLACES the old refresh.yml which atomic-renamed onto a
-# Fly volume directly. The Fly piece is now operator-side: a deploy
-# script in the private repo downloads the latest GitHub Release artifact
-# and ships it to the volume. OSS users never touch Fly.
 
 on:
   schedule:
@@ -305,156 +312,131 @@ jobs:
           done
           echo "::notice::sigstore bundles present: $(wc -c < corpus.sqlite.xz.sigstore.json) bytes + $(wc -c < corpus.sqlite.xz.sha256.sigstore.json) bytes"
 
-      - name: Compute release tag
-        id: tag
-        # github.run_started_at is RFC3339 with `:` characters; Git refs
-        # forbid `:`. Use github.run_id (immutable, monotonic, valid in
-        # ref names) plus a sortable UTC date for human readability.
-        run: |
-          BUILD_DATE=$(date -u +%Y-%m-%d)
-          echo "tag=corpus-${BUILD_DATE}-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
-          echo "name=Corpus build ${BUILD_DATE} (run ${{ github.run_id }})" >> "$GITHUB_OUTPUT"
-
-      - name: Publish timestamped GitHub Release
-        # Immutable timestamped tag = rollback target. The `latest-corpus`
-        # alias gets updated separately below.
+      - name: Update single `latest-corpus` release with new build
+        # The Releases page used to accumulate one timestamped tag per
+        # daily cron PLUS the latest-corpus alias — even with prerelease
+        # flagging, that meant a wall of corpus entries above the actual
+        # software release. Collapsed to ONE release: `latest-corpus`,
+        # whose body is rewritten and whose assets are clobber-replaced
+        # each run.
         #
-        # The body is intentionally informative: it's the FIRST thing a
-        # GitHub user sees when they click into a release, and it doubles
-        # as a how-to for self-hosters who don't read the README. The
-        # machine-parseable `build_mode:` line at the bottom is required
-        # by the GC step downstream — bucket diff (daily) vs full (monthly)
-        # without relying on tag-name regex (which misclassified a daily
-        # run on the 1st of the month as monthly; codex caught it).
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # pin: softprops/action-gh-release@v3.0.0
-        with:
-          # Mark every corpus release as a pre-release. This is the
-          # signal to GitHub that these are NOT the canonical "software
-          # release" for the repo — keeps the [LATEST] badge on the
-          # actual v0.x.y tag from release.yml, hides corpus tags from
-          # the homepage sidebar widget, and from the "Latest" filter
-          # on the Releases page. The corpus tags stay fully accessible
-          # via direct URL + `gh release list --include-pre-releases`
-          # for anyone pinning to a specific build, and the auto-update
-          # sidecar still polls the `latest-corpus` alias unchanged
-          # (it uses the direct CDN URL, not the UI promotion).
-          prerelease: true
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.name }}
-          body: |
-            Corpus build for [`rbi-source-mcp`](https://pypi.org/project/rbi-source-mcp/) — the indexed RBI regulatory document database used by the MCP server for hybrid (FTS5 + sqlite-vec) retrieval.
-
-            ## Build mode
-
-            **`${{ env.BUILD_MODE }}`**.
-            Build modes:
-            - `diff` (daily, 02:00 UTC): incremental — fetches only docs whose RBI list-page `last_updated_at` is newer than the previous corpus. ~5 min, ~50 CF Neurons.
-            - `full` (monthly, 1st @ 03:00 UTC): rebuilds from scratch to catch silent re-uploads (RBI replaces a PDF without bumping the list-page date). ~30 min, ~3000 CF Neurons.
-
-            ## Install
-
-            ```bash
-            pip install rbi-source-mcp
-            rbi-source-fetch-corpus                                          # pulls latest-corpus alias
-            rbi-source-fetch-corpus --tag ${{ steps.tag.outputs.tag }}    # pin to this exact build
-            rbi-source-fetch-corpus --verify-sigstore                        # cryptographic verify
-            ```
-
-            See `rbi-source-fetch-corpus --help` for `--to`, `--no-verify-sigstore`, etc.
-
-            ## Verify
-
-            - **SHA256:** `shasum -a 256 -c corpus.sqlite.xz.sha256`
-            - **Sigstore:** the `.sigstore.json` bundles are signed by [`corpus-release.yml@refs/heads/main`](https://github.com/${{ github.repository }}/blob/main/.github/workflows/corpus-release.yml) via GitHub Actions OIDC. Verify with `cosign verify-blob --bundle corpus.sqlite.xz.sigstore.json --certificate-identity 'https://github.com/${{ github.repository }}/.github/workflows/corpus-release.yml@refs/heads/main' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' corpus.sqlite.xz`.
-
-            ## Build provenance
-
-            | field | value |
-            | --- | --- |
-            | schema_version | 1 |
-            | embedding_model | `${{ env.RBI_EMBEDDING_MODEL }}` |
-            | embedding_dim | ${{ env.RBI_EMBEDDING_DIM }} |
-            | build_commit | [`${{ github.sha }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) |
-            | build_run | [#${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
-            | build_mode | `${{ env.BUILD_MODE }}` |
-            | run_started_at | ${{ github.run_started_at }} |
-
-            ## Smoke gate
-
-            Each release passes a paired eval gate before publish:
-            - **absolute:** ≥80% hit-rate on the eval suite
-            - **regression:** <5pp drop vs the prior `latest-corpus` build
-
-            Eval JSON attached as `eval-current.json`.
-
-            ---
-
-            build_mode: ${{ env.BUILD_MODE }}
-            <sub>(plain line above is consumed by the GC step's release-body parser — do not edit.)</sub>
-          files: |
-            corpus.sqlite.xz
-            corpus.sqlite.xz.sha256
-            corpus.sqlite.xz.sigstore.json
-            corpus.sqlite.xz.sha256.sigstore.json
-            eval-current.json
-          generate_release_notes: false
-
-      - name: Update `latest-corpus` moving alias
-        # We update assets in place via `--clobber` rather than
-        # delete-then-create, which would create a 404 window for
-        # consumers polling `latest-corpus`. Per autoplan/review feedback.
+        # Tradeoffs accepted by dropping the timestamped tags:
+        #   - Lose `rbi-source-fetch-corpus --tag corpus-YYYY-MM-DD-<run>`
+        #     pin-to-specific-build. Few users were doing this; the
+        #     default --tag latest-corpus is what 100% of the auto-update
+        #     sidecar + 99% of self-host installs actually use.
+        #   - Lose the "click into release Y to see what shipped on date X"
+        #     view on the Releases page. `corpus_meta.build_commit` is
+        #     stamped INSIDE the SQLite so per-corpus forensics still
+        #     work; workflow run logs at .github/actions also persist.
+        #
+        # Smoke-gate (≥80% absolute + <5pp regression) protects against
+        # shipping broken corpora; the Fly volume's db-prev.sqlite is the
+        # practical rollback for the hosted instance; GH Action workflow
+        # artifacts (retention 30d) provide deeper history.
+        #
+        # `prerelease: true` keeps the [LATEST] badge on the v0.x.y
+        # software release from release.yml — the corpus alias is data,
+        # not a software version.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_MODE: ${{ env.BUILD_MODE }}
+          EMB_MODEL: ${{ env.RBI_EMBEDDING_MODEL }}
+          EMB_DIM: ${{ env.RBI_EMBEDDING_DIM }}
+          BUILD_COMMIT: ${{ github.sha }}
+          BUILD_RUN_ID: ${{ github.run_id }}
+          BUILD_STARTED: ${{ github.run_started_at }}
+          BUILD_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # If the alias release doesn't exist yet (first build), create it
-          # empty before uploading; subsequent runs hit the upload --clobber path.
-          ALIAS_NOTES=$(cat <<'EOF'
-          **Always-current corpus alias** for [`rbi-source-mcp`](https://pypi.org/project/rbi-source-mcp/).
+          BUILD_DATE=$(date -u +%Y-%m-%d)
 
-          This release tracks the most recent successful build. Assets are atomically swapped via `gh release upload --clobber`, so consumers polling here never see a 404 window.
+          # The alias body is the canonical "what is this and how do I
+          # use it" page now that it's the only corpus entry on the
+          # Releases page. Build it with envsubst-style interpolation
+          # since we can't use ${{ ... }} inside a `cat <<'EOF'` block.
+          NOTES=$(cat <<EOF
+          **Always-current corpus** for [\`rbi-source-mcp\`](https://pypi.org/project/rbi-source-mcp/) — the indexed RBI regulatory document database (hybrid FTS5 + sqlite-vec retrieval).
 
-          ## Refresh cadence
+          This release is a moving alias. Assets are clobber-replaced on every successful build. Consumers polling here never see a 404 window.
 
-          - **Daily** (02:00 UTC): incremental `diff` build; ~5 min, ~50 CF Neurons.
-          - **Monthly** (1st @ 03:00 UTC): full rebuild; ~30 min, ~3000 CF Neurons.
+          ## Latest build
+
+          | field | value |
+          | --- | --- |
+          | build_date | ${BUILD_DATE} |
+          | build_mode | \`${BUILD_MODE}\` |
+          | build_commit | [\`${BUILD_COMMIT}\`](https://github.com/${BUILD_REPO}/commit/${BUILD_COMMIT}) |
+          | build_run | [#${BUILD_RUN_ID}](https://github.com/${BUILD_REPO}/actions/runs/${BUILD_RUN_ID}) |
+          | run_started_at | ${BUILD_STARTED} |
+          | schema_version | 1 |
+          | embedding_model | \`${EMB_MODEL}\` |
+          | embedding_dim | ${EMB_DIM} |
+
+          ## Cadence
+
+          - **Daily** at 02:00 UTC: incremental \`diff\` build; ~5 min, ~50 CF Neurons.
+          - **Monthly** on the 1st at 03:00 UTC: \`full\` rebuild; ~30 min, ~3000 CF Neurons. Catches silent RBI re-uploads (PDFs replaced without bumping the list-page date) that diff-mode can't see by definition.
 
           ## Install
 
-          ```bash
+          \`\`\`bash
           pip install rbi-source-mcp
-          rbi-source-fetch-corpus                   # pulls THIS alias (latest)
+          rbi-source-fetch-corpus                   # pulls THIS alias
           rbi-source-fetch-corpus --verify-sigstore # cryptographic verify
-          ```
+          \`\`\`
 
-          For reproducible / immutable deploys, pin to a timestamped `corpus-YYYY-MM-DD-<run_id>` tag instead of this alias.
+          ## Verify
 
-          See the latest timestamped release for full build provenance, smoke-gate results, and verification instructions.
+          - **SHA256:** \`shasum -a 256 -c corpus.sqlite.xz.sha256\`
+          - **Sigstore:** the \`.sigstore.json\` bundles are signed by [\`corpus-release.yml@refs/heads/main\`](https://github.com/${BUILD_REPO}/blob/main/.github/workflows/corpus-release.yml) via GitHub Actions OIDC.
+            \`\`\`bash
+            cosign verify-blob \\
+              --bundle corpus.sqlite.xz.sigstore.json \\
+              --certificate-identity 'https://github.com/${BUILD_REPO}/.github/workflows/corpus-release.yml@refs/heads/main' \\
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\
+              corpus.sqlite.xz
+            \`\`\`
+
+          ## Smoke gate
+
+          Each build passes a paired eval gate before publish:
+          - **absolute:** ≥80% hit-rate on the eval suite
+          - **regression:** <5pp drop vs the prior \`latest-corpus\` build
+
+          Eval JSON attached as \`eval.json\` (used by the next run's regression check) plus \`eval-current.json\` (this run's snapshot for forensics).
+
+          ## Forensics on prior corpora
+
+          Per-build provenance for this corpus is stamped inside the SQLite at \`corpus_meta\` (key/value rows: \`build_commit\`, \`build_run_id\`, \`build_mode\`, \`embedding_*\`, \`schema_version\`). For older builds: see [this workflow's run history](https://github.com/${BUILD_REPO}/actions/workflows/corpus-release.yml) — each run carries a 30-day artifact with the corpus + eval.
           EOF
           )
-          # --prerelease: same rationale as the timestamped publish step
-          # above. The alias is NOT the software release; pinning it as
-          # prerelease keeps the [LATEST] badge on the actual v0.x.y
-          # tag from release.yml. The sidecar that polls this alias uses
-          # the direct asset CDN URL, so the UI flag has zero impact on
-          # consumption.
+
           if ! gh release view latest-corpus --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create latest-corpus \
               --repo "$GITHUB_REPOSITORY" \
               --target main \
               --prerelease \
-              --title "Latest corpus (alias)" \
-              --notes "$ALIAS_NOTES"
+              --title "Corpus (always-current, refreshed daily)" \
+              --notes "$NOTES"
           else
-            # Refresh the alias body each run so changes to the install
-            # / verification text propagate without a one-off manual edit.
-            # --prerelease ensures the flag stays set even if a prior run
-            # (or a manual `gh release edit`) ever cleared it.
+            # Re-set title + notes every run. The title carries no date
+            # (it's the alias) so it's static, but we still issue --title
+            # in case a prior manual edit ever drifted it. --prerelease
+            # is reinforced every run so a stray `gh release edit` can't
+            # promote the alias to [LATEST] accidentally.
             gh release edit latest-corpus \
               --repo "$GITHUB_REPOSITORY" \
               --prerelease \
-              --notes "$ALIAS_NOTES"
+              --title "Corpus (always-current, refreshed daily)" \
+              --notes "$NOTES"
           fi
+
+          # Upload assets. eval-current.json is this run's snapshot;
+          # eval.json is what the NEXT run reads in the regression-gate
+          # (compare-against-prior). Both go on the alias so the
+          # regression check has a stable URL and the current run is
+          # human-inspectable.
           gh release upload latest-corpus \
             --repo "$GITHUB_REPOSITORY" \
             --clobber \
@@ -463,118 +445,8 @@ jobs:
             corpus.sqlite.xz.sigstore.json \
             corpus.sqlite.xz.sha256.sigstore.json \
             eval-current.json
-          # Rename eval-current.json → eval.json on the alias for the
-          # next run's regression-gate lookup.
           mv eval-current.json eval.json
           gh release upload latest-corpus eval.json --repo "$GITHUB_REPOSITORY" --clobber
-
-      - name: GC old timestamped corpus releases
-        # Daily cron means we accumulate ~30 timestamped releases/month at
-        # ~140 MB each. Without GC the Releases page becomes a wall of
-        # corpus tags within weeks. Retention policy:
-        #   - Keep the latest 14 *diff* timestamped releases (rolling 2-week
-        #     rollback window).
-        #   - Keep the latest 12 *full* rebuilds (one-year monthly pins).
-        #   - Always keep `latest-corpus` (separate release name, never in
-        #     the candidate set).
-        # Delete everything else. Each delete passes --cleanup-tag so the
-        # underlying git tag goes too.
-        #
-        # Bucket by `build_mode:` line in the release body — NOT by tag-name
-        # regex. The old regex `^corpus-YYYY-MM-01-*` misclassified the
-        # daily run that lands on the 1st (02:00 UTC) as monthly, then the
-        # actual monthly run at 03:00 UTC arrived as a second tag with the
-        # same date prefix. Codex review caught this — the body line is
-        # the source of truth.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          KEEP_DAILY=14
-          KEEP_MONTHLY=12
-
-          # Pull tag_name + body in ONE API call and let jq extract the
-          # build_mode straight from the body. The previous loop did
-          # `gh release view <tag> --json body` per tag — N+1 against the
-          # GH API that would hit the 1000 req/hour secondary limit once
-          # history grew.
-          #
-          # NOTE: this uses `gh api .../releases` (REST) instead of
-          # `gh release list --json body` because `body` is NOT a valid
-          # field for `gh release list` — only for `gh release view`. The
-          # first attempt (run 25652776520, 2026-05-11) failed with
-          # `Unknown JSON field: "body"` because the local jq sanity check
-          # in the original PR used synthetic data, not the real API
-          # schema. REST returns snake_case (`.tag_name`, not `.tagName`);
-          # `--paginate` walks all pages so old timestamped corpus tags
-          # are included once the candidate set grows past one page.
-          #
-          # Output format: "<tag>\t<mode>" where mode is diff | full | unknown.
-          gh api -X GET --paginate \
-            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq '
-              .[]
-              | select(.tag_name | startswith("corpus-"))
-              | select(.tag_name != "latest-corpus")
-              | [
-                  .tag_name,
-                  (((.body // "") | capture("(?m)^build_mode:[[:space:]]*(?<m>diff|full)")? // {m: "unknown"}) | .m)
-                ]
-              | @tsv
-            ' > /tmp/all-tags-with-mode.tsv
-
-          : > /tmp/keep-monthly.txt
-          : > /tmp/keep-daily.txt
-          : > /tmp/unknown-mode.txt
-          : > /tmp/all-tags.txt
-          monthly_kept=0
-          daily_kept=0
-
-          while IFS=$'\t' read -r tag mode; do
-            [ -z "$tag" ] && continue
-            echo "$tag" >> /tmp/all-tags.txt
-            case "$mode" in
-              full)
-                if [ "$monthly_kept" -lt "$KEEP_MONTHLY" ]; then
-                  echo "$tag" >> /tmp/keep-monthly.txt
-                  monthly_kept=$((monthly_kept + 1))
-                fi
-                ;;
-              diff)
-                if [ "$daily_kept" -lt "$KEEP_DAILY" ]; then
-                  echo "$tag" >> /tmp/keep-daily.txt
-                  daily_kept=$((daily_kept + 1))
-                fi
-                ;;
-              *)
-                # Pre-build_mode releases (legacy) — keep them in the daily
-                # bucket so the rollover doesn't accidentally nuke history.
-                echo "$tag" >> /tmp/unknown-mode.txt
-                if [ "$daily_kept" -lt "$KEEP_DAILY" ]; then
-                  echo "$tag" >> /tmp/keep-daily.txt
-                  daily_kept=$((daily_kept + 1))
-                fi
-                ;;
-            esac
-          done < /tmp/all-tags-with-mode.tsv
-
-          # Compute deletion list: everything in all-tags that isn't kept.
-          sort -u /tmp/keep-daily.txt /tmp/keep-monthly.txt > /tmp/keep-all.txt
-          sort -u /tmp/all-tags.txt > /tmp/all-sorted.txt
-          comm -23 /tmp/all-sorted.txt /tmp/keep-all.txt > /tmp/delete.txt
-
-          DEL_COUNT=$(wc -l < /tmp/delete.txt | tr -d ' ')
-          KEEP_COUNT=$(wc -l < /tmp/keep-all.txt | tr -d ' ')
-          UNKNOWN_COUNT=$(wc -l < /tmp/unknown-mode.txt | tr -d ' ')
-          echo "::notice::GC plan — keeping $KEEP_COUNT (diff $daily_kept + full $monthly_kept; legacy/unknown=$UNKNOWN_COUNT); deleting $DEL_COUNT"
-
-          if [ "$DEL_COUNT" -gt 0 ]; then
-            while read -r tag; do
-              [ -z "$tag" ] && continue
-              echo "  delete: $tag"
-              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
-            done < /tmp/delete.txt
-          fi
 
       - name: Upload corpus artifact (workflow run, 30d retention)
         if: always()
