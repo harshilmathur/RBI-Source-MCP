@@ -94,7 +94,11 @@ jobs:
           for f in ./dist/*.sigstore.json; do
             [ -s "$f" ] || { echo "::error::missing or empty sigstore bundle"; ls -la dist/; exit 1; }
           done
-          echo "::notice::$(ls dist/*.sigstore.json | wc -l) sigstore bundles signed"
+          # Count via array (glob expansion under bash) rather than `ls | wc`
+          # — shellcheck SC2012 flags `ls` parsing as unsafe for non-alpha
+          # filenames. Array is the bash-blessed pattern.
+          bundles=( ./dist/*.sigstore.json )
+          echo "::notice::${#bundles[@]} sigstore bundles signed"
 
       - name: List built + signed artifacts
         run: ls -la dist/
