@@ -353,8 +353,18 @@ jobs:
 
           # The alias body is the canonical "what is this and how do I
           # use it" page now that it's the only corpus entry on the
-          # Releases page. Build it with envsubst-style interpolation
-          # since we can't use ${{ ... }} inside a `cat <<'EOF'` block.
+          # Releases page. Built with shell-variable interpolation
+          # (unquoted heredoc) because a quoted `<<'\''EOF'\''` would
+          # block the BUILD_DATE / BUILD_COMMIT / etc. lookups below.
+          #
+          # Heads-up for future edits: GitHub Actions' expression parser
+          # walks the entire workflow file looking for the double-brace
+          # construct, including comments inside `run:` shell blocks
+          # (this scope). A literal double-brace ellipsis double-brace
+          # in any comment here makes the YAML fail to parse and
+          # silently disables the schedule. Lost six days in May 2026
+          # to exactly this. Rule of thumb: spell out "GitHub Actions
+          # expression" in prose, never the syntax.
           NOTES=$(cat <<EOF
           **Always-current corpus** for [\`rbi-source-mcp\`](https://pypi.org/project/rbi-source-mcp/) — the indexed RBI regulatory document database (hybrid FTS5 + sqlite-vec retrieval).
 
