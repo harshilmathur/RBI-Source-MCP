@@ -39,3 +39,42 @@ jobs:
 
       - name: Tests
         run: pytest -q
+
+  # Validate every workflow file with actionlint. The repo lost six days of
+  # corpus updates in May 2026 because a literal expression-syntax in a
+  # comment inside a `run:` block silently disabled the corpus-release.yml
+  # schedule. Local `yaml.safe_load` passed (YAML is structurally valid);
+  # GitHub Actions' expression parser was the only thing that knew. The
+  # pytest job above never touches workflow files, so without this job
+  # the same class of issue would slip through CI again.
+  #
+  # actionlint runs the same expression parser GH does, plus shellcheck
+  # on `run:` blocks, plus structural validation. Pinned to v1.7.12 by
+  # download URL; binary is ~3 MB and downloads in <1s.
+  lint-workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          VERSION=1.7.12
+          ARCH=$(uname -m)
+          # rhysd/actionlint ships linux_amd64 and linux_arm64. Map.
+          case "$ARCH" in
+            x86_64)  ARCHIVE=actionlint_${VERSION}_linux_amd64.tar.gz ;;
+            aarch64) ARCHIVE=actionlint_${VERSION}_linux_arm64.tar.gz ;;
+            *)       echo "::error::unsupported arch: $ARCH"; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${ARCHIVE}" \
+            | tar -xz -C /tmp
+          sudo mv /tmp/actionlint /usr/local/bin/
+          actionlint -version
+
+      - name: Lint .github/workflows/*.yml
+        # `-color` makes the failure mode readable on the PR page. Exit
+        # code != 0 fails the job, which blocks merge under the strict
+        # branch protection.
+        run: actionlint -color
