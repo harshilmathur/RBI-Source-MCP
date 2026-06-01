@@ -39,8 +39,13 @@ async def test_request_exceeding_body_cap_rejected_with_413() -> None:
             )
     assert response.status_code == 413
     payload = response.json()
-    assert payload["error"] == "request_too_large"
+    # PR 4: transport-layer errors now carry the canonical disclaimer + a
+    # structured envelope with `status` + `reason` (matches the tool-dispatch
+    # envelope shape so consumers never have to branch on transport vs. tool).
+    assert payload["status"] == "error"
+    assert payload["reason"] == "request_too_large"
     assert payload["max_bytes"] == MAX_REQUEST_BODY_BYTES
+    assert "_disclaimer" in payload
 
 
 @pytest.mark.asyncio
@@ -140,10 +145,13 @@ async def test_rate_limit_kicks_in_for_mcp_endpoint() -> None:
         r = await client.post("/mcp/x", json={"i": 99})
         assert r.status_code == 429
         body = r.json()
-        assert body["error"] == "rate_limit_exceeded"
+        # PR 4: structured envelope + disclaimer on the rate-limit path.
+        assert body["status"] == "error"
+        assert body["reason"] == "rate_limit_exceeded"
         assert body["limit"] == 3
         assert "retry_after_seconds" in body
         assert "Retry-After" in r.headers
+        assert "_disclaimer" in body
 
 
 @pytest.mark.asyncio
@@ -186,6 +194,103 @@ async def test_rate_limit_isolates_clients_by_ip() -> None:
 
         # IP B is unaffected.
         r = await client.post("/mcp/x", json={"i": 0}, headers={"Fly-Client-IP": "10.0.0.2"})
+        assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_strict_cidr_gate_rejects_untrusted_peer() -> None:
+    """PR 4: when RBI_TRUSTED_PROXY_CIDRS is configured, the middleware
+    only honors trusted-proxy headers from requests whose PEER IP is in
+    the CIDR allowlist. A misconfigured deployment (proxy headers set,
+    but actual traffic not forced through the proxy) no longer lets a
+    direct-connect client spoof a rate-limit bucket via the header.
+    """
+    import ipaddress
+
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    from rbi_source_mcp.server_http import RateLimitMiddleware
+
+    async def echo(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/mcp/{path:path}", echo, methods=["POST"])])
+    # Headers are trusted, BUT the CIDR allowlist covers only
+    # 192.0.2.0/24 (RFC 5737 documentation prefix). The actual peer is
+    # 127.0.0.1 (asgi transport), which is NOT in the CIDR → the
+    # middleware MUST ignore the spoofed Fly-Client-IP and bucket by the
+    # peer instead. A spoofer cycling through fake IPs hits the limit on
+    # the peer's bucket.
+    app.add_middleware(
+        RateLimitMiddleware,
+        limit=2,
+        window_s=60.0,
+        trusted_proxy_headers=("fly-client-ip",),
+        trusted_proxy_cidrs=(ipaddress.ip_network("192.0.2.0/24"),),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for i in range(2):
+            r = await client.post(
+                "/mcp/x",
+                json={"i": i},
+                headers={"Fly-Client-IP": f"10.0.0.{i}"},
+            )
+            assert r.status_code == 200
+        # Third request — different spoofed IP, but same peer → 429.
+        r = await client.post(
+            "/mcp/x",
+            json={"i": 99},
+            headers={"Fly-Client-IP": "10.0.0.99"},
+        )
+        assert r.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_strict_cidr_gate_honors_trusted_peer() -> None:
+    """Counterpart to the rejection test: when the peer IS in the CIDR
+    allowlist, the trusted-proxy header is honored and per-spoofed-IP
+    buckets work as before."""
+    import ipaddress
+
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    from rbi_source_mcp.server_http import RateLimitMiddleware
+
+    async def echo(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/mcp/{path:path}", echo, methods=["POST"])])
+    # CIDR covers 127.0.0.0/8 — the asgi transport's peer IP IS trusted.
+    app.add_middleware(
+        RateLimitMiddleware,
+        limit=2,
+        window_s=60.0,
+        trusted_proxy_headers=("fly-client-ip",),
+        trusted_proxy_cidrs=(ipaddress.ip_network("127.0.0.0/8"),),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # Two requests from spoofed IP "10.0.0.1" — share a bucket.
+        for i in range(2):
+            r = await client.post(
+                "/mcp/x", json={"i": i}, headers={"Fly-Client-IP": "10.0.0.1"}
+            )
+            assert r.status_code == 200
+        r = await client.post(
+            "/mcp/x", json={"i": 99}, headers={"Fly-Client-IP": "10.0.0.1"}
+        )
+        assert r.status_code == 429
+        # A DIFFERENT spoofed IP gets its own bucket and is unaffected.
+        r = await client.post(
+            "/mcp/x", json={"i": 0}, headers={"Fly-Client-IP": "10.0.0.99"}
+        )
         assert r.status_code == 200
 
 

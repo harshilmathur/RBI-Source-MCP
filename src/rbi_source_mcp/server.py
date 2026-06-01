@@ -403,14 +403,22 @@ def _build_server() -> Server:
                 return [TextContent(type="text", text=json.dumps(_wrap_response(result), indent=2))]
 
             if name == "rbi_get_document":
+                document_id = args.get("document_id", "") or ""
                 include_text = bool(args.get("include_text", False))
                 extra_props["include_text"] = include_text
                 extra_props["has_as_of"] = bool(args.get("as_of"))
+                # Per-tool cap on document_id. The field is supposed to be a
+                # canonical `rbi:<family>:<id>` string (well under 100 chars);
+                # the broader MAX_INPUT_LEN gate just keeps unbounded inputs
+                # from reaching the SQL layer.
+                if len(document_id) > MAX_INPUT_LEN:
+                    status = "input_too_large"
+                    return [_input_too_large_response(name, "document_id", len(document_id))]
                 try:
                     result = await asyncio.to_thread(
                         _run_get_document,
                         db_path,
-                        args.get("document_id", ""),
+                        document_id,
                         include_text,
                         args.get("as_of"),
                     )
@@ -423,11 +431,20 @@ def _build_server() -> Server:
             if name == "rbi_check_current":
                 # Deliberately no extra_props — url_or_ref can carry user-leakable
                 # context (e.g., a private ref id). Just count the call.
+                url_or_ref = args.get("url_or_ref", "") or ""
+                # Apply MAX_INPUT_LEN before dispatch — the underlying
+                # RBI_REF_PATTERN regex (in check_current.py) uses
+                # unbounded `[A-Za-z0-9./\s\-]+` runs, which is a ReDoS
+                # surface on giant inputs over stdio (HTTP has its own
+                # body-size cap).
+                if len(url_or_ref) > MAX_INPUT_LEN:
+                    status = "input_too_large"
+                    return [_input_too_large_response(name, "url_or_ref", len(url_or_ref))]
                 try:
                     result = await asyncio.to_thread(
                         _run_check_current,
                         db_path,
-                        args.get("url_or_ref", ""),
+                        url_or_ref,
                     )
                 except Exception as exc:  # noqa: BLE001
                     status = "error"

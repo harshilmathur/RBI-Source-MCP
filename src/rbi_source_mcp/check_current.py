@@ -33,7 +33,14 @@ from .db import find_md_by_id, find_withdrawn_by_original_id
 
 NOTIF_URL_PATTERN = re.compile(r"NotificationUser\.aspx\?Id=(\d+)", re.IGNORECASE)
 FAQ_URL_PATTERN = re.compile(r"FAQ(View|Display)\.aspx", re.IGNORECASE)
-RBI_REF_PATTERN = re.compile(r"^\s*RBI[/][A-Za-z0-9./\s\-]+\d{4}[/\s\-]+\d+\s*$", re.IGNORECASE)
+# Bounded quantifiers on every variable-length run — closes the ReDoS
+# surface on the stdio entry path. server.py applies MAX_INPUT_LEN as an
+# outer cap; the inner bounds here keep individual runs from triggering
+# pathological backtracking even if a future caller forgets that gate.
+RBI_REF_PATTERN = re.compile(
+    r"^\s*RBI[/][A-Za-z0-9./\s\-]{1,200}\d{4}[/\s\-]{1,5}\d{1,10}\s*$",
+    re.IGNORECASE,
+)
 
 
 #: Canonical key set for every success/definitive response. `_response()`
