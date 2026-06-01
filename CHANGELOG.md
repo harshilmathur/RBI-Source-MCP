@@ -4,6 +4,49 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-06-01
+
+Deep-review remediation: a 6-PR stack closing 46+ findings from a multi-agent code review. The bulk are correctness, architecture, and test-coverage improvements; one user-facing behavior change to call out.
+
+### Behavior change (call-out)
+
+- `RBI_TRUSTED_PROXY_CIDRS` env var added (alongside the existing `RBI_TRUSTED_PROXY_HEADERS`). When CIDRS is set, the rate-limit middleware only honors trusted-proxy headers from requests whose peer IP is in the allowlist — closes the spoofing surface that existed when an operator set HEADERS without forcing all traffic through the proxy. Back-compat: when CIDRS is unset but HEADERS is set, headers are still honored and a one-time warning is logged on startup. Hosted instance operators should set this to the Cloudflare + Fly egress ranges.
+
+### Correctness fixes (#17)
+
+- **withdrawn_list parser now populates `issued_date`.** The `_extract_two_dates` helper existed but was never called; every withdrawn record persisted with `issued_date=NULL`. Two-date rows now split into (earlier=issued, later=withdrawn); single-date rows treat the date as withdrawal (the page's semantic).
+- **`check_current` envelope is now a fixed canonical shape across every success branch.** Introduced `_response(**fields)` factory + `_RESPONSE_KEYS` tuple. Callers no longer need to branch on `status` to know which keys exist. The `withdrawn` branch now surfaces `rbi_ref` and `issued_date` alongside `withdrawn_date`.
+- **`hybrid_search` preserves `vec_distance` when both rankers agree.** RRF merge previously dropped the dense scalar for the strongest candidates (chunks that appeared in both sparse + dense), degrading downstream confidence calibration.
+- **schema-v3 detector is whitespace-insensitive.** Replaced a 12-space literal substring match on CREATE TABLE DDL with semantic detection via `PRAGMA index_list` (origin='u' to ignore operator-added manual UNIQUE indexes). Legacy DBs with different whitespace no longer silently skip the compound-key migration.
+
+### Architecture (#23)
+
+- **Crawler `USER_AGENT` and helpers centralized in `crawler/_common.py`.** Fixes a typo in `md_detail.py` (`messaging.rbi-source-mcp` → `RBI-Source-MCP`) and removes 8 copy-paste duplicates of the same string.
+- **Indexer `BulkResult` centralized in `indexer/_bulk.py`.** Replaces 5 near-identical dataclass copies (one public, one named differently, three private) whose behavior had already drifted (`elapsed()` and `total` were inconsistent).
+- **MD and standalone-circular indexers now use the shared `persist_document_and_chunks` helper** instead of inlining the upsert + delete-chunks + embed + insert pipeline. `build_md_index.py` shrinks 273 → 138 lines; `build_circular_index.py` shrinks 360 → 121 lines. Behavior preserved; chunks now scoped by `document_id` (not `md_id`) for cross-family safety.
+
+### Performance (#20)
+
+- **Content-hash skip-fast path in `persist_document_and_chunks`.** When `pdf_artifacts.text_sha256` already matches `sha256(body_text)` and chunks exist, persist returns the prior chunk count without re-embedding. Saves ~50-200ms per chunk on every unchanged document during the daily refresh. `force=True` bypasses the skip (used by monthly full-rebuild).
+
+### Security hardening (#20)
+
+- **`MAX_INPUT_LEN` now applied to `url_or_ref` (rbi_check_current) and `document_id` (rbi_get_document).** Closes a ReDoS surface on stdio where unbounded inputs reached the `RBI_REF_PATTERN` regex.
+- **`RBI_REF_PATTERN` regex pinned with bounded quantifiers** so individual runs can't backtrack pathologically.
+- **413 (body too large) and 429 (rate-limited) middleware responses now carry `_disclaimer` + `_llm_instruction`** and a structured `status`/`reason` envelope matching the tool-dispatch shape. Previously these paths emitted bare JSON, leaking past the documented disclaimer-wrap contract.
+
+### Test coverage (#24)
+
+- New test files: `test_telemetry.py`, `test_get_document.py`, `test_escape_fts5.py`, `test_db_migrations.py`, `test_server_dispatch.py`, plus extensions to `test_persist.py`, `test_http_middleware.py`, `test_withdrawn_list.py`, `test_check_current.py`, `test_schema_compound_key.py`, and a new `test_db_hybrid_search.py`. Suite grows from 126 → 194 passing tests; previously-untested safety-boundary modules (telemetry's disabled-mode invariant, FTS5 escape, schema-rebuild migration path, server dispatch envelope) now have direct coverage.
+
+### Housekeeping (#21)
+
+- `mcp/topics.py`: single source for the topic-hint → md_id table (was duplicated in `search.py` and `check_compliance.py`).
+- Removed the `fly_region` PostHog back-compat shim (v0.7→v0.8 transition aid, dashboards have long since migrated).
+- pyproject classifier: `Development Status :: 2 - Pre-Alpha` → `4 - Beta`; add `Python :: 3.13`.
+- README rewritten for the post-2026-05-18 single-rolling-release corpus model.
+- README documents the new `RBI_TRUSTED_PROXY_CIDRS` env var.
+
 ### v0.8.4 — security hardening + corpus-release housekeeping
 
 Output of a deep security/QA audit (`/review`-driven, with codex + claude
