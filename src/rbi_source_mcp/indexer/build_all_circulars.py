@@ -14,29 +14,21 @@ import argparse
 import os
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
 
 from ..crawler import circular_list
 from ..db import connect, init_db
+from ._bulk import BulkResult
 from .build_circular_index import index_circular
 
 logger = structlog.get_logger(__name__)
 
 DEFAULT_DB_PATH = "./data/db.sqlite"
 
-
-@dataclass(slots=True)
-class CircularBulkResult:
-    started_at: float
-    success: list[str] = field(default_factory=list)
-    failed: list[tuple[str, str]] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
-
-    def elapsed(self) -> float:
-        return time.time() - self.started_at
+# Back-compat alias — earlier code used a per-family class name.
+CircularBulkResult = BulkResult
 
 
 def run(

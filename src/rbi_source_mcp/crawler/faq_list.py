@@ -22,6 +22,8 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
+from ._common import USER_AGENT
+
 logger = structlog.get_logger(__name__)
 
 LIST_URL = "https://www.rbi.org.in/Scripts/FAQView.aspx"
@@ -29,7 +31,6 @@ FAQ_ID_PATTERN = re.compile(r"FAQView\.aspx\?Id=(\d+)", re.IGNORECASE)
 DATE_PREFIX_PATTERN = re.compile(
     r"^\s*([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4})\s+(.+)$"
 )
-USER_AGENT = "rbi-source-mcp/0.1 (+https://github.com/harshilmathur/RBI-Source-MCP)"
 
 
 @dataclass(slots=True)
