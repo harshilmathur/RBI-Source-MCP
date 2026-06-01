@@ -144,6 +144,51 @@ def test_whitespace_only_input_never_raises(db) -> None:
     assert result["status"] == "unsupported_at_v0.1"
 
 
+def test_definitive_response_has_canonical_envelope(db) -> None:
+    """Every success/definitive branch must emit the full canonical key set.
+
+    Regression: prior to PR 1, the 5 success-branch return sites each emitted
+    a different subset of fields, forcing callers to branch on `status` to
+    know which keys were safe to access. The `_response()` factory + the
+    `_RESPONSE_KEYS` tuple are the contract; this test pins it.
+    """
+    from rbi_source_mcp.check_current import _RESPONSE_KEYS
+
+    success_inputs = [
+        # MD active
+        "https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12550",
+        # MD unknown
+        "https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=99999",
+        # withdrawn-list page URL
+        "https://www.rbi.org.in/Scripts/NotificationUserWithdrawnCircular.aspx",
+        # circular withdrawn (matches seeded fixture)
+        "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=11234",
+        # circular not-found
+        "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=99999",
+    ]
+    for url in success_inputs:
+        result = check_current(db, url)
+        # status must NOT be the unsupported envelope here
+        assert not result["status"].startswith("unsupported"), (
+            f"unexpected unsupported for definitive input {url!r}"
+        )
+        missing = [k for k in _RESPONSE_KEYS if k not in result]
+        assert not missing, f"input {url!r} missing canonical keys: {missing}"
+
+
+def test_withdrawn_response_includes_rbi_ref_and_issued_date(db) -> None:
+    """The withdrawn branch must surface `rbi_ref` and `issued_date` so the
+    LLM can cite both the original ref and the issue date alongside the
+    withdrawal date. Prior to PR 1 these two fields were dropped."""
+    result = check_current(
+        db,
+        "https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=11234",
+    )
+    assert result["status"] == "withdrawn"
+    assert result["rbi_ref"] == "RBI/DOR/2018/45"
+    assert result["issued_date"] == "2018-03-15"
+
+
 def test_response_always_has_source_url(db) -> None:
     """Every response must carry source_url so the consumer can link back."""
     inputs = [
