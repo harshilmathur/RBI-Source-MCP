@@ -6,7 +6,6 @@ import argparse
 import os
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
@@ -95,12 +94,7 @@ def index_press_release(
     return 0 if n > 0 else 1
 
 
-@dataclass(slots=True)
-class _BulkResult:
-    started_at: float
-    success: list[str] = field(default_factory=list)
-    failed: list[tuple[str, str]] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
+from ._bulk import BulkResult as _BulkResult  # noqa: E402  (legacy private alias)
 
 
 def run_bulk(*, db_path: Path | None = None, skip_already: bool = True, sleep_between: float = 0.4) -> _BulkResult:

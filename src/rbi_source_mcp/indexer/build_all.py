@@ -22,32 +22,20 @@ import argparse
 import os
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
 
 from ..db import connect
+from ._bulk import BulkResult
 from .build_md_index import index_md
 
 logger = structlog.get_logger(__name__)
 
 DEFAULT_DB_PATH = "./data/db.sqlite"
 
-
-@dataclass(slots=True)
-class BulkResult:
-    started_at: float
-    success: list[str] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
-    failed: list[tuple[str, str]] = field(default_factory=list)
-
-    @property
-    def total(self) -> int:
-        return len(self.success) + len(self.skipped) + len(self.failed)
-
-    def elapsed(self) -> float:
-        return time.time() - self.started_at
+# Re-export so callers can still do ``from .build_all import BulkResult``.
+__all__ = ["BulkResult", "list_md_ids", "already_indexed_ids", "run", "main"]
 
 
 def list_md_ids(db_path: Path) -> list[str]:

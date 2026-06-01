@@ -31,6 +31,8 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup, Tag
 
+from ._common import USER_AGENT
+
 logger = structlog.get_logger(__name__)
 
 LIST_URL = "https://www.rbi.org.in/Scripts/NotificationUserWithdrawnCircular.aspx"
@@ -39,7 +41,6 @@ DETAIL_URL_PATTERN = re.compile(
 )
 NOTIF_URL_PATTERN = re.compile(r"NotificationUser\.aspx\?Id=(\d+)", re.IGNORECASE)
 RBI_REF_PATTERN = re.compile(r"RBI[/\s][A-Za-z0-9./\s\-]+\d{4}[/\s\-]+\d+", re.IGNORECASE)
-USER_AGENT = "rbi-source-mcp/0.1 (+https://github.com/harshilmathur/RBI-Source-MCP)"
 
 
 @dataclass(slots=True)

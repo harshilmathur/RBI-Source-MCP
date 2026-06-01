@@ -21,21 +21,19 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import structlog
 
 from ..crawler import md_detail
 from ..crawler.pdf_fetch import fetch_pdf
-from ..db import connect, init_db, upsert_md
+from ..db import connect, init_db
 from ..extractor.pdf import (
     extract_text,
     parse_issue_date_from_pdf_text,
     parse_rbi_ref_from_pdf_text,
 )
-from .chunk import chunk_md_text
-from .embed import embed_texts, to_sqlite_vec_bytes
+from .persist import persist_document_and_chunks
 
 logger = structlog.get_logger(__name__)
 
@@ -90,161 +88,63 @@ def index_md(
     pdf_issue_date = parse_issue_date_from_pdf_text(extraction.text)
     document_id = f"rbi:master_direction:{md_id}"
 
-    # Step 6: chunk.
-    chunks = chunk_md_text(
-        extraction.text,
-        document_id=document_id,
-        md_id=md_id,
-        rbi_ref=rbi_ref,
-    )
-    if not chunks:
-        logger.error("index.chunk.empty", md_id=md_id)
-        return 1
+    # Date precedence: detail-page "Updated as on" stamp > PDF body issue
+    # date > whatever the list crawler captured. The PDF date is the most
+    # reliable signal when the detail page doesn't carry an explicit
+    # "Updated as on" (common for never-amended MDs).
+    last_updated_at = detail.updated_as_on or pdf_issue_date
 
-    # Step 7+8: persist.
+    # Step 6+7+8: chunk + persist + audit. The shared helper handles
+    # idempotent upsert (compound key (md_id, document_family)), batched
+    # embedding, chunks_vec sync, and pdf_artifacts audit. We pre-resolve
+    # the title here because MDs need a specific fallback: keep the
+    # list-crawler title if it exists (it carries the "Master Direction
+    # on X (Updated as on Y)" string), else strip from the detail page's
+    # raw HTML (the static H1 "Master Directions" is useless on its own).
     init_db(db_path)
-    now = datetime.utcnow().isoformat() + "Z"
     with connect(db_path) as conn:
-        # If the list crawler already populated this MD's row, keep its title
-        # (it carries the proper "Master Direction on X (Updated as on Y)" string).
-        # The detail page's static H1 is just "Master Directions" — useless.
         existing = conn.execute(
-            "SELECT title FROM documents WHERE md_id = ?", (md_id,)
+            "SELECT title FROM documents WHERE md_id = ? AND document_family = 'master_direction'",
+            (md_id,),
         ).fetchone()
-        title = existing["title"] if existing and existing["title"] else _strip_title_html(detail.raw_html)
+        title = (
+            existing["title"]
+            if existing and existing["title"]
+            else _strip_title_html(detail.raw_html)
+        )
 
-        # Date precedence: detail-page "Updated as on" stamp > PDF body issue
-        # date > whatever the list crawler captured. The PDF date is the most
-        # reliable signal when the detail page doesn't carry an explicit
-        # "Updated as on" (common for never-amended MDs).
-        last_updated_at = detail.updated_as_on or pdf_issue_date
-
-        upsert_md(
+        n = persist_document_and_chunks(
             conn,
-            md_id,
+            document_id=document_id,
+            md_id=md_id,
             title=title,
             detail_url=detail.detail_url,
+            document_family="master_direction",
+            body_text=extraction.text,
+            rbi_ref=rbi_ref,
             last_updated_at=last_updated_at,
-            department=None,
             pdf_urls=[detail.primary_pdf_url] + detail.annexure_pdf_urls,
+            pdf_artifact={
+                "pdf_url": detail.primary_pdf_url,
+                "sha256": pdf_result.pdf_sha256,
+                "bytes": pdf_result.bytes,
+                "page_count": extraction.page_count,
+                "quality": extraction.extraction_quality,
+            },
             status="current",
-            now=now,
         )
-
-        # Idempotent chunk replacement: delete all existing chunks for this
-        # md_id, then re-insert. Also delete the corresponding chunks_vec
-        # rows (keyed by chunks.rowid) so embeddings stay in sync.
-        old_rowids = [
-            r[0]
-            for r in conn.execute(
-                "SELECT rowid FROM chunks WHERE md_id = ?", (md_id,)
-            )
-        ]
-        if old_rowids:
-            placeholders = ",".join("?" for _ in old_rowids)
-            try:
-                conn.execute(
-                    f"DELETE FROM chunks_vec WHERE rowid IN ({placeholders})",
-                    old_rowids,
-                )
-            except Exception as exc:  # noqa: BLE001 — chunks_vec may not exist
-                logger.warning("chunks_vec.delete_skip", error=str(exc))
-        conn.execute("DELETE FROM chunks WHERE md_id = ?", (md_id,))
-
-        # Compute embeddings in one batch (much faster than one-at-a-time).
-        # ~50ms per chunk on CPU; for 200 chunks that's ~10s. First call also
-        # downloads/loads the bge-small model (~135 MB, one-time per machine).
-        try:
-            embeddings = embed_texts([c.text for c in chunks])
-            embeddings_ok = embeddings.shape[0] == len(chunks)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("embed.fail_skip_dense", error=str(exc))
-            embeddings = None
-            embeddings_ok = False
-
-        for i, c in enumerate(chunks):
-            text_sha = _sha256(c.text)
-            cur = conn.execute(
-                """
-                INSERT INTO chunks (
-                    chunk_id, document_id, md_id, rbi_ref, section, paragraph_anchor,
-                    page, text, text_sha256, char_start, char_end, pdf_url, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    c.chunk_id,
-                    c.document_id,
-                    c.md_id,
-                    c.rbi_ref,
-                    c.section,
-                    c.paragraph_anchor,
-                    c.page,
-                    c.text,
-                    text_sha,
-                    c.char_start,
-                    c.char_end,
-                    detail.primary_pdf_url,
-                    now,
-                ),
-            )
-            if embeddings_ok and embeddings is not None:
-                rowid = cur.lastrowid
-                try:
-                    conn.execute(
-                        "INSERT INTO chunks_vec(rowid, embedding) VALUES (?, ?)",
-                        (rowid, to_sqlite_vec_bytes(embeddings[i])),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("chunks_vec.insert_fail", error=str(exc))
-                    embeddings_ok = False  # don't keep retrying on the same MD
-
-        # Audit row.
-        conn.execute(
-            """
-            INSERT INTO pdf_artifacts (
-                pdf_url, document_id, md_id, pdf_sha256, text_sha256,
-                bytes, page_count, extraction_quality, is_indexed,
-                fetched_at, extracted_at, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL)
-            ON CONFLICT(pdf_url) DO UPDATE SET
-                pdf_sha256 = excluded.pdf_sha256,
-                text_sha256 = excluded.text_sha256,
-                bytes = excluded.bytes,
-                page_count = excluded.page_count,
-                extraction_quality = excluded.extraction_quality,
-                is_indexed = 1,
-                fetched_at = excluded.fetched_at,
-                extracted_at = excluded.extracted_at,
-                error = NULL
-            """,
-            (
-                detail.primary_pdf_url,
-                document_id,
-                md_id,
-                pdf_result.pdf_sha256,
-                extraction.text_sha256,
-                pdf_result.bytes,
-                extraction.page_count,
-                extraction.extraction_quality,
-                pdf_result.fetched_at,
-                now,
-            ),
-        )
+        if n == 0:
+            logger.error("index.chunk.empty", md_id=md_id)
+            return 1
 
     logger.info(
         "index.ok",
         md_id=md_id,
-        chunks=len(chunks),
+        chunks=n,
         pages=extraction.page_count,
         quality=round(extraction.extraction_quality, 3),
     )
     return 0
-
-
-def _sha256(text: str) -> str:
-    import hashlib
-
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _strip_title_html(html: str) -> str:

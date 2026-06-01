@@ -13,6 +13,7 @@ from datetime import datetime
 import httpx
 import structlog
 
+from ._common import USER_AGENT
 from .notif_detail import (
     NotifDetailResult,
     _extract_html_body,
@@ -23,7 +24,6 @@ from .notif_detail import (
 logger = structlog.get_logger(__name__)
 
 DETAIL_URL_TEMPLATE = "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid={prid}"
-USER_AGENT = "rbi-source-mcp/0.1 (+https://github.com/harshilmathur/RBI-Source-MCP)"
 
 
 def fetch_detail(prid: str, *, client: httpx.Client | None = None, timeout: float = 30.0) -> NotifDetailResult:

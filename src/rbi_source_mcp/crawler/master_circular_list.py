@@ -25,11 +25,12 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
+from ._common import USER_AGENT
+
 logger = structlog.get_logger(__name__)
 
 INDEX_URL = "https://www.rbi.org.in/Scripts/BS_ViewMasterCirculardetails.aspx"
 CATEGORY_PATTERN = re.compile(r"BS_ViewMasterCirculardetails\.aspx\?did=(\d+)", re.IGNORECASE)
-USER_AGENT = "rbi-source-mcp/0.1 (+https://github.com/harshilmathur/RBI-Source-MCP)"
 
 # Skip these footer/sidebar PDFs that appear on every category page.
 NOISE_PDF_LABELS = {"rbi's vision and values", "accessibility statement"}
