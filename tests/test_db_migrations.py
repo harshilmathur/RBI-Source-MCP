@@ -169,6 +169,49 @@ def test_rebuild_preserves_chunk_foreign_keys(tmp_path: Path) -> None:
         )
 
 
+def test_v3_detector_ignores_manual_unique_index_on_current_schema(
+    tmp_path: Path,
+) -> None:
+    """An operator who manually runs `CREATE UNIQUE INDEX ... ON
+    documents(md_id)` on an already-v3 table must NOT trigger a spurious
+    rebuild.
+
+    Adversarial review (post-PR 4): the v3 detector matched any unique
+    single-column index on `md_id`, including user-created ones. Origin
+    'u' (auto-index from column-level UNIQUE) is the only legitimate
+    legacy-v2 signal; 'c' (CREATE INDEX) is a deliberate operator choice
+    and the rebuild would silently drop it.
+    """
+    db_path = tmp_path / "manual_index.sqlite"
+    # Build the canonical v3 schema fresh.
+    with connect(db_path) as conn:
+        sql_before = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchone()[0]
+        assert "UNIQUE (md_id, document_family)" in sql_before
+
+        # Operator manually adds a redundant unique index on md_id alone.
+        conn.execute(
+            "CREATE UNIQUE INDEX manual_md_id_unique ON documents(md_id)"
+        )
+
+    # Re-open: the detector must NOT trigger a rebuild. The table SQL
+    # must remain the v3 compound-UNIQUE schema verbatim.
+    with connect(db_path) as conn:
+        sql_after = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchone()[0]
+        assert sql_after == sql_before, (
+            "v3 detector falsely re-fired on an already-migrated table"
+            " just because an operator added a manual UNIQUE INDEX on md_id"
+        )
+        # And the manual index survives.
+        manual = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='manual_md_id_unique'"
+        ).fetchone()
+        assert manual is not None, "operator's manual index was dropped by spurious rebuild"
+
+
 def test_fresh_db_skips_legacy_migrations(tmp_path: Path) -> None:
     """A fresh DB built from SCHEMA_SQL must NOT trigger either rebuild
     (no CHECK, no column-level UNIQUE → no work needed). The connect()
