@@ -159,20 +159,28 @@ def parse_list_html(html: str, base_url: str = LIST_URL) -> list[WithdrawnCircul
                 original_ref = cell_text
                 break
 
-        # Date: first cell that's primarily date-shaped.
-        withdrawn_date: str | None = None
-        issued_date: str | None = None
-        for cell_text in cell_texts:
-            iso = _parse_date_anywhere(cell_text)
-            if iso and _looks_like_date_cell(cell_text):
-                # First date-only cell wins. We can't reliably distinguish
-                # "issued" vs "withdrawn" across sections, so we surface it
-                # as withdrawn_date (the row's primary semantic in this list).
-                withdrawn_date = iso
-                break
-        if not withdrawn_date:
-            # Fallback: parse any date in the joined row text.
-            withdrawn_date = _parse_date_anywhere(joined)
+        # Dates: prefer the two-dates path, then fall back to first date-shaped
+        # cell. `_extract_two_dates` scans the joined row text for ALL dates and
+        # returns (earliest, latest). RRA 2.0 sections typically have both
+        # (issue + withdrawal); the older "Circulars Withdrawn" section has
+        # only one date per row, which is the withdrawal date — since this is
+        # a withdrawn-circulars list, a single date is semantically a withdrawal.
+        earlier, later = _extract_two_dates(joined)
+        if earlier and later:
+            issued_date: str | None = earlier
+            withdrawn_date: str | None = later
+        elif earlier:
+            issued_date = None
+            withdrawn_date = earlier
+        else:
+            issued_date = None
+            withdrawn_date = None
+            # Last-resort: try cell-by-cell parse for unusual layouts.
+            for cell_text in cell_texts:
+                iso = _parse_date_anywhere(cell_text)
+                if iso and _looks_like_date_cell(cell_text):
+                    withdrawn_date = iso
+                    break
 
         # Title: prefer the cell that contains the NotificationUser anchor;
         # else longest non-date, non-ref, non-serial cell.

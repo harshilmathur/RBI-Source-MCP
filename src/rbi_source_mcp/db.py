@@ -22,6 +22,7 @@ script for one-line install).
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -390,10 +391,46 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # the same row). Fresh DBs created from SCHEMA_SQL above already have
     # the compound key; this rebuild only fires on legacy DBs whose schema
     # still has the column-level UNIQUE.
-    schema_sql_v3 = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'"
+    #
+    # Detection is semantic, not text-based — SQLite stores CREATE TABLE DDL
+    # verbatim, so a legacy DB whose schema used different whitespace would
+    # silently skip this rebuild and re-introduce the cross-family overwrite
+    # hazard. We inspect indexes: a v2 documents table has exactly one auto-
+    # generated UNIQUE index covering only `md_id`; v3 has a UNIQUE auto-index
+    # covering `(md_id, document_family)`. A tolerant DDL regex is the fallback.
+    needs_v3_rebuild = False
+    has_documents_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
     ).fetchone()
-    if schema_sql_v3 and "md_id            TEXT NOT NULL UNIQUE" in (schema_sql_v3[0] or ""):
+    if has_documents_table:
+        for idx_row in conn.execute("PRAGMA index_list(documents)").fetchall():
+            # index_list columns: (seq, name, unique, origin, partial)
+            idx_name = idx_row[1] if not hasattr(idx_row, "keys") else idx_row["name"]
+            is_unique = idx_row[2] if not hasattr(idx_row, "keys") else idx_row["unique"]
+            if not is_unique:
+                continue
+            cols = [
+                (r[2] if not hasattr(r, "keys") else r["name"])
+                for r in conn.execute(f"PRAGMA index_info({idx_name!r})").fetchall()
+            ]
+            if cols == ["md_id"]:
+                needs_v3_rebuild = True
+                break
+
+    # Belt-and-braces fallback for any setup where PRAGMA introspection might
+    # miss (e.g., DDL contains UNIQUE but no actual unique index was created):
+    # tolerant regex on the CREATE TABLE text.
+    if not needs_v3_rebuild and has_documents_table:
+        schema_sql_v3 = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchone()
+        if schema_sql_v3 and re.search(
+            r"\bmd_id\s+TEXT\s+NOT\s+NULL\s+UNIQUE\b",
+            schema_sql_v3[0] or "",
+        ):
+            needs_v3_rebuild = True
+
+    if needs_v3_rebuild:
         logger.info("schema.migrate.rebuild_documents_compound_unique")
         try:
             conn.execute("PRAGMA foreign_keys = OFF")
@@ -747,11 +784,25 @@ def hybrid_search(
     # Build RRF fusion. Key by chunk_id since same chunk may appear in both.
     sparse_rank: dict[str, int] = {r["chunk_id"]: i + 1 for i, r in enumerate(sparse)}
     dense_rank: dict[str, int] = {r["chunk_id"]: i + 1 for i, r in enumerate(dense)}
+
+    # Carry the per-side scalar scores explicitly so a chunk appearing in
+    # both rankers retains both `bm25_score` and `vec_distance` in the merged
+    # output. Previously we used `setdefault` on a single row, which silently
+    # dropped `vec_distance` for the strongest candidates (the ones both
+    # rankers agreed on). Downstream confidence calibration in
+    # `mcp/search.py` and `mcp/check_compliance.py` depends on both scalars.
     rows_by_id: dict[str, sqlite3.Row] = {}
+    bm25_by_id: dict[str, float | None] = {}
+    vec_by_id: dict[str, float | None] = {}
     for r in sparse:
-        rows_by_id[r["chunk_id"]] = r
+        chunk_id = r["chunk_id"]
+        rows_by_id[chunk_id] = r
+        # sqlite3.Row's `__contains__` iterates values, not keys — use .keys().
+        bm25_by_id[chunk_id] = r["bm25_score"] if "bm25_score" in r.keys() else None  # noqa: SIM118
     for r in dense:
-        rows_by_id.setdefault(r["chunk_id"], r)
+        chunk_id = r["chunk_id"]
+        rows_by_id.setdefault(chunk_id, r)
+        vec_by_id[chunk_id] = r["vec_distance"] if "vec_distance" in r.keys() else None  # noqa: SIM118
 
     scored: list[tuple[float, str]] = []
     for chunk_id in rows_by_id:
@@ -772,6 +823,8 @@ def hybrid_search(
                 sparse_rank=sparse_rank.get(chunk_id),
                 dense_rank=dense_rank.get(chunk_id),
                 fusion_score=fusion_score,
+                bm25_score=bm25_by_id.get(chunk_id),
+                vec_distance=vec_by_id.get(chunk_id),
             )
         )
     return out
@@ -783,9 +836,25 @@ def _row_to_dict(
     sparse_rank: int | None,
     dense_rank: int | None,
     fusion_score: float | None = None,
+    bm25_score: float | None = None,
+    vec_distance: float | None = None,
 ) -> dict:
-    """Coalesce a sparse OR dense result row into the unified dict shape."""
+    """Coalesce a sparse OR dense result row into the unified dict shape.
+
+    When invoked from the merge path of `hybrid_search`, callers pass both
+    `bm25_score` and `vec_distance` explicitly (extracted from the per-side
+    rows). When invoked from a fast path (sparse-only or dense-only), callers
+    pass whichever score applies and leave the other as the explicit kwarg
+    default of None; we then read the score off `row` as a fallback so the
+    single-side case still populates the right scalar.
+    """
     keys = row.keys()
+    bm25 = bm25_score
+    if bm25 is None and "bm25_score" in keys:
+        bm25 = row["bm25_score"]
+    vec = vec_distance
+    if vec is None and "vec_distance" in keys:
+        vec = row["vec_distance"]
     return {
         "chunk_id": row["chunk_id"],
         "document_id": row["document_id"],
@@ -800,8 +869,8 @@ def _row_to_dict(
         "document_url": row["document_url"],
         "last_updated_at": row["last_updated_at"],
         "status": row["status"],
-        "bm25_score": row["bm25_score"] if "bm25_score" in keys else None,
-        "vec_distance": row["vec_distance"] if "vec_distance" in keys else None,
+        "bm25_score": bm25,
+        "vec_distance": vec,
         "sparse_rank": sparse_rank,
         "dense_rank": dense_rank,
         "fusion_score": fusion_score,

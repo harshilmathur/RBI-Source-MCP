@@ -72,6 +72,39 @@ def test_replacement_ref_is_none_at_v0_1() -> None:
     assert all(r.replacement_ref is None for r in rows)
 
 
+def test_row_with_two_dates_populates_issued_and_withdrawn() -> None:
+    """RRA 2.0 rows can carry both an issue date and a withdrawal date.
+
+    Regression: prior to the fix, `issued_date` was hard-coded to `None` on
+    every withdrawn row, so the "earlier date → issued, later date → withdrawn"
+    information from `_extract_two_dates` was discarded.
+    """
+    fixture = """
+    <html><body><table>
+      <tr>
+        <td>123.</td>
+        <td>DOR.NBFC.FIN.012/03.10.001/2014</td>
+        <td>Master Direction withdrawn under the RRA 2.0 review</td>
+        <td>March 1, 2014 (issued); September 30, 2022 (withdrawn)</td>
+      </tr>
+    </table></body></html>
+    """
+    rows = withdrawn_list.parse_list_html(fixture)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.issued_date == "2014-03-01"
+    assert row.withdrawn_date == "2022-09-30"
+
+
+def test_extract_two_dates_helper_orders_chronologically() -> None:
+    """The helper itself should return (earlier, later) when two dates present."""
+    earlier, later = withdrawn_list._extract_two_dates(
+        "issued 5 January 2010; withdrawn 30 September 2022"
+    )
+    assert earlier == "2010-01-05"
+    assert later == "2022-09-30"
+
+
 def test_url_predicates() -> None:
     assert withdrawn_list.is_withdrawn_url(
         "https://www.rbi.org.in/Scripts/NotificationUserWithdrawnCircular.aspx?Id=42"
