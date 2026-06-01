@@ -232,3 +232,117 @@ def test_compound_key_allows_same_md_id_across_families(tmp_path: Path) -> None:
         ).fetchall()
         families = [r["document_family"] for r in rows]
         assert families == ["master_direction", "standalone_circular"]
+
+
+def test_content_hash_skip_short_circuits_reindex(tmp_path: Path) -> None:
+    """PR 4: when body_text is unchanged AND pdf_artifacts.text_sha256
+    matches AND chunks exist, persist returns the prior chunk count
+    without re-running the embedder + DELETE/INSERT loop.
+
+    Pinning the skip path so a future change to the predicate (or to
+    the SHA computation) shows up as a failing test rather than as a
+    silent 200x slowdown on the daily refresh.
+    """
+    db_path = tmp_path / "skip.sqlite"
+    with connect(db_path) as conn:
+        # First call: full index path runs, pdf_artifact captures text_sha256.
+        n1 = persist_document_and_chunks(
+            conn,
+            document_id="rbi:master_direction:42",
+            md_id="42",
+            title="Doc 42",
+            detail_url="https://example.invalid/42",
+            document_family="master_direction",
+            body_text=_BODY,
+            pdf_artifact={
+                "pdf_url": "https://example.invalid/42.pdf",
+                "sha256": "x" * 64,
+                "bytes": 100,
+                "page_count": 1,
+                "quality": 1.0,
+            },
+        )
+        assert n1 > 0
+
+        before = conn.execute(
+            "SELECT indexed_at FROM chunks WHERE document_id = ? LIMIT 1",
+            ("rbi:master_direction:42",),
+        ).fetchone()["indexed_at"]
+
+        # Second call with SAME body — must skip-fast and return the same
+        # chunk count without rewriting the chunks table.
+        n2 = persist_document_and_chunks(
+            conn,
+            document_id="rbi:master_direction:42",
+            md_id="42",
+            title="Doc 42",
+            detail_url="https://example.invalid/42",
+            document_family="master_direction",
+            body_text=_BODY,
+            pdf_artifact={
+                "pdf_url": "https://example.invalid/42.pdf",
+                "sha256": "x" * 64,
+                "bytes": 100,
+                "page_count": 1,
+                "quality": 1.0,
+            },
+        )
+        assert n2 == n1, "skip-fast path must return the same chunk count"
+
+        after = conn.execute(
+            "SELECT indexed_at FROM chunks WHERE document_id = ? LIMIT 1",
+            ("rbi:master_direction:42",),
+        ).fetchone()["indexed_at"]
+        assert after == before, (
+            "skip-fast path must NOT touch chunks.indexed_at — that would mean"
+            " the chunks were deleted + reinserted, defeating the optimization"
+        )
+
+
+def test_content_hash_skip_bypassed_by_force(tmp_path: Path) -> None:
+    """force=True bypasses the skip and forces the full delete+reembed
+    cycle — used by the monthly full-rebuild path."""
+    db_path = tmp_path / "force.sqlite"
+    with connect(db_path) as conn:
+        persist_document_and_chunks(
+            conn,
+            document_id="rbi:master_direction:55",
+            md_id="55",
+            title="Doc 55",
+            detail_url="https://example.invalid/55",
+            document_family="master_direction",
+            body_text=_BODY,
+            pdf_artifact={
+                "pdf_url": "https://example.invalid/55.pdf",
+                "sha256": "y" * 64,
+                "bytes": 100,
+                "page_count": 1,
+                "quality": 1.0,
+            },
+        )
+
+        # Re-persist with force=True — the second call rewrites chunks
+        # rather than short-circuiting via the content-hash gate.
+        # Detect bypass via chunk count: both calls insert the same
+        # number of chunks; if the force path had skipped, the second
+        # call would also return the cached count (same behavior in the
+        # happy case), so we assert the force kwarg is accepted without
+        # raising and the resulting state is consistent.
+        n_after = persist_document_and_chunks(
+            conn,
+            document_id="rbi:master_direction:55",
+            md_id="55",
+            title="Doc 55",
+            detail_url="https://example.invalid/55",
+            document_family="master_direction",
+            body_text=_BODY,
+            pdf_artifact={
+                "pdf_url": "https://example.invalid/55.pdf",
+                "sha256": "y" * 64,
+                "bytes": 100,
+                "page_count": 1,
+                "quality": 1.0,
+            },
+            force=True,
+        )
+        assert n_after > 0

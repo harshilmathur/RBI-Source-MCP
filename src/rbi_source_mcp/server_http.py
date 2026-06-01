@@ -38,7 +38,24 @@ from starlette.routing import Mount, Route
 
 from . import __version__
 from . import oauth as _oauth
+from .disclaimer import DISCLAIMER, LLM_INSTRUCTION
 from .server import _build_server
+
+
+def _wrap_transport_error(payload: dict) -> dict:
+    """Inject the disclaimer + LLM instruction into a transport-layer error.
+
+    Mirrors `server._wrap_response` so 413 (body too large) and 429
+    (rate limited) responses carry the same legal-posture fields the
+    rest of the API does. Previously these middleware paths emitted
+    bare JSON without `_disclaimer`, which leaked past the documented
+    "every response carries the disclaimer" contract.
+    """
+    return {
+        "_disclaimer": DISCLAIMER,
+        "_llm_instruction": LLM_INSTRUCTION,
+        **payload,
+    }
 
 # Static homepage. Loaded once at import time and held in memory; mtime is
 # checked on each request to support local dev (edit the file, refresh).
@@ -252,6 +269,40 @@ _TRUSTED_PROXY_HEADERS: tuple[str, ...] = tuple(
 )
 
 
+def _parse_cidrs(value: str) -> tuple:
+    """Parse a comma-separated list of CIDR blocks into ip_network objects.
+
+    Empty / unset value returns an empty tuple — the default-deny posture
+    described under `_TRUSTED_PROXY_CIDRS` below.
+    """
+    import ipaddress
+
+    out = []
+    for chunk in value.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            out.append(ipaddress.ip_network(chunk, strict=False))
+        except ValueError:
+            logger.warning("trusted_proxy_cidr.invalid", value=chunk)
+    return tuple(out)
+
+
+# Trusted proxy CIDR allowlist — comma-separated. Even when
+# `RBI_TRUSTED_PROXY_HEADERS` is set, the rate-limit middleware will only
+# honor those headers when the request's peer IP falls inside one of
+# these CIDR blocks. The hosted instance fronted by Cloudflare + Fly
+# should set this to the Cloudflare + Fly egress ranges; self-host
+# installs leave it empty (and `_TRUSTED_PROXY_HEADERS` empty too) so
+# the peer IP is always used.
+#
+# Without this CIDR gate, an operator who only set _PROXY_HEADERS (but
+# whose deployment doesn't actually force traffic through the proxy)
+# would let any client spoof a rate-limit bucket via the trusted header.
+_TRUSTED_PROXY_CIDRS = _parse_cidrs(os.environ.get("RBI_TRUSTED_PROXY_CIDRS", ""))
+
+
 class _NormalizeMcpPath:
     """ASGI-level middleware: rewrite /mcp to /mcp/ in the scope.
 
@@ -304,11 +355,14 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
             try:
                 if int(cl) > self.max_bytes:
                     return JSONResponse(
-                        {
-                            "error": "request_too_large",
-                            "max_bytes": self.max_bytes,
-                            "received_content_length": int(cl),
-                        },
+                        _wrap_transport_error(
+                            {
+                                "status": "error",
+                                "reason": "request_too_large",
+                                "max_bytes": self.max_bytes,
+                                "received_content_length": int(cl),
+                            }
+                        ),
                         status_code=413,
                     )
             except ValueError:
@@ -363,6 +417,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         oauth_window_s: float = OAUTH_RATE_LIMIT_WINDOW_SECONDS,
         excluded_paths: tuple[str, ...] = ("/health", "/"),
         trusted_proxy_headers: tuple[str, ...] | None = None,
+        trusted_proxy_cidrs: tuple | None = None,
     ) -> None:
         super().__init__(app)
         self.limit = limit
@@ -376,23 +431,73 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.trusted_proxy_headers = (
             trusted_proxy_headers if trusted_proxy_headers is not None else _TRUSTED_PROXY_HEADERS
         )
+        self.trusted_proxy_cidrs = (
+            trusted_proxy_cidrs if trusted_proxy_cidrs is not None else _TRUSTED_PROXY_CIDRS
+        )
         # ip -> (window_start_ts, count). Periodically pruned in dispatch.
         self._buckets: dict[str, tuple[float, int]] = {}
         self._oauth_buckets: dict[str, tuple[float, int]] = {}
         self._last_prune = time.time()
 
+    def _peer_in_trusted_cidr(self, peer: str) -> bool:
+        """Is the peer IP one of the configured trusted-proxy ranges?
+
+        Empty CIDR set (the default) returns False — meaning even if
+        `_TRUSTED_PROXY_HEADERS` is set, we still won't honor those
+        headers. Operators must opt in to BOTH the header list AND a
+        CIDR allowlist to enable header-based client-IP extraction.
+        """
+        if not self.trusted_proxy_cidrs:
+            return False
+        import ipaddress
+
+        try:
+            ip_obj = ipaddress.ip_address(peer)
+        except ValueError:
+            return False
+        return any(ip_obj in net for net in self.trusted_proxy_cidrs)
+
     def _client_ip(self, request: Request) -> str:
-        # Only read headers the operator explicitly trusts. The default
-        # (no env set) falls straight through to peer IP, which is the
-        # right answer for self-host installs running on localhost or
-        # bare VMs without a reverse proxy.
+        # Header trust is gated on:
+        #   1. The operator opted in to a header list via env, AND
+        #   2. Either the operator also opted in to a CIDR allowlist
+        #      and the request peer is in it (strict mode), OR no CIDR
+        #      allowlist is configured (back-compat mode — preserves
+        #      existing hosted deployments that set HEADERS but never
+        #      set CIDRS). In back-compat mode we log a one-time warning
+        #      at the call site to nudge operators toward strict mode.
+        #
+        # The default for both env vars is empty → fall through to peer
+        # IP, which is the right answer for self-host installs running
+        # on localhost or bare VMs without a reverse proxy.
+        peer = request.client.host if request.client else "unknown"
+        if not self.trusted_proxy_headers:
+            return peer
+        # Strict mode: CIDR configured → enforce peer-in-CIDR.
+        if self.trusted_proxy_cidrs and not self._peer_in_trusted_cidr(peer):
+            return peer
+        # Back-compat mode: no CIDR configured, but operator set the
+        # header list — read it but warn (rate-limited so we don't spam).
+        if not self.trusted_proxy_cidrs and not getattr(
+            self, "_proxy_cidr_warned", False
+        ):
+            logger.warning(
+                "trusted_proxy.no_cidr_gate",
+                hint=(
+                    "RBI_TRUSTED_PROXY_HEADERS is set but RBI_TRUSTED_PROXY_CIDRS"
+                    " is unset. Header values will be honored without a CIDR check,"
+                    " which lets any client spoof the rate-limit bucket. Set"
+                    " RBI_TRUSTED_PROXY_CIDRS to the proxy egress range to harden."
+                ),
+            )
+            self._proxy_cidr_warned = True
         for header in self.trusted_proxy_headers:
             v = request.headers.get(header)
             if v:
                 # XFF may be comma-separated; trusted upstream proxies
                 # *append* to it, so the first hop is the real client.
                 return v.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
+        return peer
 
     def _is_oauth_path(self, path: str) -> bool:
         # Claude.ai also probes /.well-known/oauth-protected-resource/mcp,
@@ -441,12 +546,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 path=path,
             )
             return JSONResponse(
-                {
-                    "error": "rate_limit_exceeded",
-                    "limit": limit,
-                    "window_seconds": window_s,
-                    "retry_after_seconds": retry_after,
-                },
+                _wrap_transport_error(
+                    {
+                        "status": "error",
+                        "reason": "rate_limit_exceeded",
+                        "limit": limit,
+                        "window_seconds": window_s,
+                        "retry_after_seconds": retry_after,
+                    }
+                ),
                 status_code=429,
                 headers={"Retry-After": str(retry_after)},
             )

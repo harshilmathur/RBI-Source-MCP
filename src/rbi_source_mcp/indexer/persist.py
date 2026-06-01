@@ -58,14 +58,58 @@ def persist_document_and_chunks(
     pdf_urls: list[str] | None = None,
     pdf_artifact: dict[str, Any] | None = None,  # {pdf_url, sha256, bytes, page_count, quality}
     status: str = "current",
+    force: bool = False,
 ) -> int:
     """Upsert a documents row, replace its chunks, and insert embeddings.
 
     Returns the number of chunks inserted. Caller is responsible for the
     surrounding `with connect()` context.
+
+    When `force=False` (the default), a content-hash skip-fast path runs
+    BEFORE the delete + re-embed loop: if `pdf_artifacts.text_sha256`
+    already matches `sha256(body_text)` for this document AND chunks
+    exist, we touch `documents.last_seen_at` and return the existing
+    chunk count without re-embedding. This saves the ~50-200ms-per-chunk
+    embedder cost on every unchanged document during the daily refresh.
+    Set `force=True` to bypass (used by the monthly full-rebuild).
     """
     now = datetime.utcnow().isoformat() + "Z"
     pdf_urls = pdf_urls or []
+
+    # Content-hash skip-fast: if body_text hasn't changed since last index,
+    # avoid the chunk delete + embed + insert loop entirely. We key on
+    # text_sha256 in pdf_artifacts because that's where the prior text
+    # hash is stamped; falls back through gracefully when no prior row.
+    if not force:
+        body_sha = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
+        prior_row = conn.execute(
+            """
+            SELECT text_sha256, (
+                SELECT COUNT(*) FROM chunks WHERE document_id = ?
+            ) AS chunk_count
+            FROM pdf_artifacts
+            WHERE document_id = ?
+            ORDER BY fetched_at DESC
+            LIMIT 1
+            """,
+            (document_id, document_id),
+        ).fetchone()
+        if (
+            prior_row is not None
+            and prior_row["text_sha256"] == body_sha
+            and prior_row["chunk_count"] > 0
+        ):
+            # Touch last_seen_at so corpus-meta freshness checks still update.
+            conn.execute(
+                "UPDATE documents SET last_seen_at = ? WHERE document_id = ?",
+                (now, document_id),
+            )
+            logger.info(
+                "persist.skip.content_unchanged",
+                document_id=document_id,
+                chunks=prior_row["chunk_count"],
+            )
+            return int(prior_row["chunk_count"])
 
     chunks = chunk_md_text(body_text, document_id=document_id, md_id=md_id, rbi_ref=rbi_ref)
     if not chunks:
