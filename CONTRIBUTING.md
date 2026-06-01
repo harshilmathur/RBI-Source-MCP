@@ -20,7 +20,7 @@ cd RBI-Source-MCP
 
 # uv is the project's package manager (https://docs.astral.sh/uv/)
 uv sync                # install dev + runtime deps
-uv run pytest          # 97+ unit tests, must pass green
+uv run pytest          # ~190 unit tests, must pass green
 uv run ruff check .    # lint, must pass clean (whole repo, matches CI)
 ```
 
@@ -28,8 +28,8 @@ To populate a local corpus (one-time, ~1-2 hours; downloads ~135 MB embedding mo
 
 ```bash
 uv run rbi-source-crawl                                # documents + withdrawn metadata
-uv run rbi-source-index-all                            # 342 Master Directions
-uv run rbi-source-index-all-circulars                  # 290 Standalone Circulars
+uv run rbi-source-index-all                            # ~340 Master Directions
+uv run rbi-source-index-all-circulars                  # ~290 Standalone Circulars
 uv run rbi-source-index-press-release --bulk
 uv run rbi-source-index-faq --bulk
 uv run rbi-source-index-master-circular --bulk
