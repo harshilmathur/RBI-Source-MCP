@@ -22,11 +22,12 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup, Tag
 
+from ._common import USER_AGENT
+
 logger = structlog.get_logger(__name__)
 
 LIST_URL = "https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx"
 DETAIL_URL_PATTERN = re.compile(r"BS_ViewMasDirections\.aspx\?id=(\d+)", re.IGNORECASE)
-USER_AGENT = "rbi-source-mcp/0.1 (+https://github.com/harshilmathur/RBI-Source-MCP)"
 
 
 @dataclass(slots=True)
