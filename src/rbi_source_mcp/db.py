@@ -404,10 +404,16 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if has_documents_table:
         for idx_row in conn.execute("PRAGMA index_list(documents)").fetchall():
-            # index_list columns: (seq, name, unique, origin, partial)
+            # index_list columns: (seq, name, unique, origin, partial).
+            # `origin` is 'u' for an auto-index from a column-level UNIQUE
+            # constraint, 'pk' for the primary key, 'c' for a user-created
+            # CREATE INDEX. Only 'u' indicates the legacy v2 schema we want
+            # to rebuild — a manual CREATE UNIQUE INDEX on (md_id) added by
+            # an operator post-migration would be 'c' and we leave it alone.
             idx_name = idx_row[1] if not hasattr(idx_row, "keys") else idx_row["name"]
             is_unique = idx_row[2] if not hasattr(idx_row, "keys") else idx_row["unique"]
-            if not is_unique:
+            origin = idx_row[3] if not hasattr(idx_row, "keys") else idx_row["origin"]
+            if not is_unique or origin != "u":
                 continue
             cols = [
                 (r[2] if not hasattr(r, "keys") else r["name"])
