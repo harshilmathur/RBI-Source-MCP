@@ -10,12 +10,16 @@ authors = [
 ]
 keywords = ["mcp", "rbi", "fintech", "regulatory", "compliance", "india"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    # Live on PyPI (v0.8.4), hosted demo at rbi-source.harshil.ai, signed
+    # corpus releases via GitHub Actions. The Pre-Alpha label was a v0.1
+    # holdover; Beta reflects the actual maturity surface.
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
 ]
 

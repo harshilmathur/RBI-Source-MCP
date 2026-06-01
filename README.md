@@ -216,9 +216,10 @@ The legal posture is preserved on **error** responses too: if a tool dispatch ra
    → embed (CF Workers AI in CI; bge-base @ 768-dim)
    → build new SQLite (FTS5 + chunks_vec virtual table)
    → smoke gate (rbi-source-eval, ≥80% absolute AND <5pp regression)
-   → sigstore-sign + publish corpus.sqlite.xz as a GitHub Release
-   → GC: keep last 14 daily + last 12 monthly timestamped tags + the
-     `latest-corpus` moving alias; delete the rest
+   → sigstore-sign + publish corpus.sqlite.xz to the single rolling
+     `latest-corpus` release (older builds are NOT retained as
+     timestamped tags — forensics live in the SQLite `corpus_meta`
+     table and the 30-day GHA workflow artifacts)
 ```
 
 ## Self-host
@@ -314,23 +315,27 @@ The default install is a local stdio MCP, which is what most people want. The HT
 rbi-source-mcp-http --host 0.0.0.0 --port 8080
 ```
 
-If you put a reverse proxy in front (Cloudflare, Fly.io, nginx, Caddy, etc.), set `RBI_TRUSTED_PROXY_HEADERS` to the comma-separated list of headers your proxy uses to forward the real client IP. Without this, per-IP rate limits collapse to a single bucket for all traffic — or worse, can be reset per-request by a forged `X-Forwarded-For` header. Common setups:
+If you put a reverse proxy in front (Cloudflare, Fly.io, nginx, Caddy, etc.), set `RBI_TRUSTED_PROXY_HEADERS` to the comma-separated list of headers your proxy uses to forward the real client IP. Without this, per-IP rate limits collapse to a single bucket for all traffic — or worse, can be reset per-request by a forged `X-Forwarded-For` header. As of v0.9, you should ALSO set `RBI_TRUSTED_PROXY_CIDRS` to the egress range of your proxy, so the server only honors those headers from requests whose peer IP is in the allowlist. Common setups:
 
 ```bash
 # Cloudflare → Fly.io (the maintainer's hosted instance)
-RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip rbi-source-mcp-http --host 0.0.0.0 --port 8080
+RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip \
+  RBI_TRUSTED_PROXY_CIDRS=173.245.48.0/20,103.21.244.0/22,fdaa::/16 \
+  rbi-source-mcp-http --host 0.0.0.0 --port 8080
 
 # Plain reverse proxy on the same host (nginx, Caddy)
-RBI_TRUSTED_PROXY_HEADERS=x-forwarded-for rbi-source-mcp-http --host 0.0.0.0 --port 8080
+RBI_TRUSTED_PROXY_HEADERS=x-forwarded-for \
+  RBI_TRUSTED_PROXY_CIDRS=127.0.0.0/8 \
+  rbi-source-mcp-http --host 0.0.0.0 --port 8080
 ```
 
-Default (env unset) = peer IP, which is correct for `localhost` / `0.0.0.0` direct exposure. **Self-hosters running stdio (the default) ignore this entirely** — there's no HTTP, no proxy, no rate-limit middleware.
+Default (both env unset) = peer IP, which is correct for `localhost` / `0.0.0.0` direct exposure. Setting `RBI_TRUSTED_PROXY_HEADERS` without `RBI_TRUSTED_PROXY_CIDRS` falls into a back-compat mode that still honors the header but logs a one-time warning. **Self-hosters running stdio (the default) ignore both of these entirely** — there's no HTTP, no proxy, no rate-limit middleware.
 
 ### Daily corpus refresh
 
 The workflow at `.github/workflows/corpus-release.yml` runs **daily at 02:00 UTC** (diff mode: ~5 min, ~50 CF Neurons) plus a **monthly full rebuild** on the 1st at 03:00 UTC as a silent-re-upload safety net. Each run: crawl + index + smoke gate (≥80% absolute, <5pp regression) + sigstore-sign + publish to [Releases](https://github.com/harshilmathur/RBI-Source-MCP/releases). Self-hosters re-run `rbi-source-fetch-corpus` whenever they want fresh data; the `latest-corpus` alias always points at the most recent build.
 
-The Releases page is auto-pruned: latest 14 dailies + latest 12 monthlies kept as immutable rollback targets, the rest deleted (last successful run takes ~30s for the GC pass).
+Since 2026-05-18 the workflow publishes to a **single rolling release** (`latest-corpus`) rather than producing per-build timestamped tags. The release asset is clobber-replaced on every successful build. Per-build forensics (commit SHA, build timestamp, doc count, eval score) live inside the SQLite itself via the `corpus_meta` table; older releases that the GHA artifact retention (30 days) still has are recoverable from the Actions tab.
 
 ## Roadmap
 
