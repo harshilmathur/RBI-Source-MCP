@@ -85,7 +85,6 @@ src/rbi_source_mcp/
 scripts/                     Ops + research tooling, not shipped in the runtime image.
   ├─ reembed_to_bge_base.py  Corpus re-embed across providers (A/B testing)
   ├─ eval_dump.py + compare_ab.py + compare_3way.py   Embedding-model bake-off
-  (Deploy/QA scripts moved to ~/code/rbi-source-mcp-deploy/ in v0.7.0.)
 
 tests/                       126 unit tests passing, 3 skipped (94 baseline +
                              28 fetch_corpus + 2 rate-limit + 2 OAuth-bucket;
@@ -94,17 +93,11 @@ tests/                       126 unit tests passing, 3 skipped (94 baseline +
 data/db.sqlite              ~250 MB at 768-dim; ~803 docs, ~57k chunks (drifts daily)
 ```
 
-## Hosted endpoint (maintainer's instance — pointer only)
+## Hosted endpoint (maintainer's instance)
 
-Live at `https://rbi-source.harshil.ai/mcp/`. Operational details — Fly app
-config, Dockerfile, Cloudflare custom-domain setup, in-container corpus
-sidecar, operator runbook (release / rollback / token rotation), and the
-version-lockstep contracts (cosign ↔ sigstore-python; `RBI_TRUSTED_PROXY_HEADERS`
-↔ `server_http.py`) — live in the deploy repo:
-
-→ https://github.com/harshilmathur/rbi-source-deploy
-
-The OSS tree ships zero deployment specifics by design.
+A free, no-auth instance of this package runs at `https://rbi-source.harshil.ai/mcp/`.
+It runs the same code + corpus pipeline that's in this repo; deployment specifics
+are out of scope for this tree.
 
 ## Console scripts
 
@@ -198,10 +191,9 @@ uv run ruff check src/ tests/    # lint, must be clean
 uv run rbi-source-eval           # corpus quality gate (must pass at ≥80%)
 ```
 
-End-to-end integration tests against the live public endpoint live in
-`~/code/rbi-source-mcp-deploy/scripts/integration_test_public.py` (private
-deploy repo as of v0.7.0). Run after every deploy of the maintainer's
-hosted instance to catch regressions on the public surface.
+End-to-end integration tests against a live HTTP endpoint live outside this
+tree (operator-side, not part of the OSS package). The eval gate inside this
+repo is the canonical regression test.
 
 The eval is the canonical regression test — if it drops below 80%, retrieval
 quality has regressed and the build should fail. Currently 100% (25/25).
