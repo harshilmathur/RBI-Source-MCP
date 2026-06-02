@@ -265,23 +265,22 @@ claude mcp add rbi-source -s user -- rbi-source-mcp
 
 ### Custom corpus source
 
-Both `rbi-source-fetch-corpus` and the underlying `fetch_corpus.fetch_install_corpus(...)` accept `repo` / `tag` / `asset_name` overrides if you publish a corpus to a different GitHub Releases location:
+Both `rbi-source-fetch-corpus` and the underlying `fetch_corpus.fetch(...)` accept `--repo` / `--tag` overrides if you publish a corpus to a different GitHub Releases location:
 
 ```bash
 rbi-source-fetch-corpus \
-  --repo  your-org/your-corpus-fork \
-  --tag   latest-corpus              # or a specific historical tag
-  --asset corpus.sqlite.xz           # default; override if you publish under a different name
+  --repo your-org/your-corpus-fork \
+  --tag  latest-corpus                # or a specific historical tag
 ```
 
 Same surface from Python:
 
 ```python
-from rbi_source_mcp.fetch_corpus import fetch_install_corpus
-fetch_install_corpus(repo="your-org/your-corpus-fork", tag="latest-corpus")
+from rbi_source_mcp.fetch_corpus import fetch
+fetch(repo="your-org/your-corpus-fork", tag="latest-corpus")
 ```
 
-The defaults (`harshilmathur/RBI-Source-MCP`, `latest-corpus`) are the maintainer's daily build. Sigstore verification, when enabled, validates against whichever workflow identity the release was signed by.
+The defaults (`harshilmathur/RBI-Source-MCP`, `latest-corpus`) are the maintainer's daily build. The asset names (`corpus.sqlite.xz`, `corpus.sqlite.xz.sha256`, `corpus.sqlite.xz.sigstore.json`) are conventions the fetcher expects on the release; a forked corpus pipeline must publish under the same names. Sigstore verification, when enabled, validates against whichever workflow identity the release was signed by.
 
 ### Cryptographic verification (optional)
 
