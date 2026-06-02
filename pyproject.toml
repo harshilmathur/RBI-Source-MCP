@@ -49,10 +49,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# v0.6.2: optional anonymous server-side telemetry for the maintainer's
-# hosted instance. PostHog Python SDK only — does NOT activate unless
-# POSTHOG_API_KEY is set in the env. Self-host installs skip this extra
-# by default and never phone home.
+# Optional anonymous server-side telemetry. PostHog Python SDK only —
+# does NOT activate unless POSTHOG_API_KEY is set in the env. Installs
+# without this extra never phone home.
+#
+# v0.9.1 split the canonical name from the legacy alias: `telemetry` is
+# the preferred name; `hosted` is the original v0.6.2 name kept for
+# back-compat. Both resolve to the same dep list; both are supported
+# indefinitely (PEP 621 doesn't support extras aliases, so we just list
+# the same dep twice). `pip install "rbi-source-mcp[telemetry]"` is the
+# documented form going forward.
+telemetry = [
+    "posthog>=3.0.0",
+]
 hosted = [
     "posthog>=3.0.0",
 ]

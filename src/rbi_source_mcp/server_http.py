@@ -255,13 +255,19 @@ RATE_LIMIT_WINDOW_SECONDS = 60.0
 OAUTH_RATE_LIMIT_PER_WINDOW = 30
 OAUTH_RATE_LIMIT_WINDOW_SECONDS = 60.0
 
-# Trusted proxy headers — comma-separated, lowercased. The hosted
-# instance behind Cloudflare → Fly should set
-# `RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip` so the
-# rate-limit key is the real client IP. Self-host installs leave this
-# empty and fall back to the peer IP, which is correct when there is
-# no proxy in front. Without this gate, any client can bypass the
-# rate limit by sending its own X-Forwarded-For header.
+# Trusted proxy headers — comma-separated, lowercased. If you run this
+# behind a reverse proxy that injects a client-IP header (e.g.
+# `cf-connecting-ip`, `fly-client-ip`, `x-forwarded-for`), set this env
+# var to the comma-separated header names. Self-host installs that bind
+# directly to a port leave this empty and fall back to the peer IP,
+# which is correct when there is no proxy in front. Without this gate,
+# any client can bypass the rate limit by sending its own
+# `X-Forwarded-For` header.
+#
+# When honoring proxy headers in production, also set
+# `RBI_TRUSTED_PROXY_CIDRS` to the proxy's egress range so a direct-
+# connect client can't spoof the trusted header. See the
+# `_TRUSTED_PROXY_CIDRS` block below.
 _TRUSTED_PROXY_HEADERS: tuple[str, ...] = tuple(
     h.strip().lower()
     for h in os.environ.get("RBI_TRUSTED_PROXY_HEADERS", "").split(",")
@@ -292,10 +298,11 @@ def _parse_cidrs(value: str) -> tuple:
 # Trusted proxy CIDR allowlist — comma-separated. Even when
 # `RBI_TRUSTED_PROXY_HEADERS` is set, the rate-limit middleware will only
 # honor those headers when the request's peer IP falls inside one of
-# these CIDR blocks. The hosted instance fronted by Cloudflare + Fly
-# should set this to the Cloudflare + Fly egress ranges; self-host
-# installs leave it empty (and `_TRUSTED_PROXY_HEADERS` empty too) so
-# the peer IP is always used.
+# these CIDR blocks. Operators running behind a proxy should set this
+# to the proxy's egress range (for Cloudflare, see their published
+# IPv4/IPv6 ranges; for Fly internal traffic add `fdaa::/16`).
+# Self-host installs leave it empty (and `_TRUSTED_PROXY_HEADERS` empty
+# too) so the peer IP is always used.
 #
 # Without this CIDR gate, an operator who only set _PROXY_HEADERS (but
 # whose deployment doesn't actually force traffic through the proxy)
@@ -463,8 +470,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         #   2. Either the operator also opted in to a CIDR allowlist
         #      and the request peer is in it (strict mode), OR no CIDR
         #      allowlist is configured (back-compat mode — preserves
-        #      existing hosted deployments that set HEADERS but never
-        #      set CIDRS). In back-compat mode we log a one-time warning
+        #      existing deployments that set HEADERS but never set
+        #      CIDRS). In back-compat mode we log a one-time warning
         #      at the call site to nudge operators toward strict mode.
         #
         # The default for both env vars is empty → fall through to peer
@@ -565,9 +572,9 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
     """Build the Starlette ASGI app that serves the MCP over streamable HTTP.
 
     `stateless=True` (default) means each MCP request is independent — no
-    server-side session state. Simpler for hosted deployment behind a load
-    balancer; loses per-session features (subscriptions, resumable streams),
-    none of which we use.
+    server-side session state. Simpler when running behind a load balancer
+    or with rolling deploys; loses per-session features (subscriptions,
+    resumable streams), none of which we use.
 
     Mounts:
         /mcp        — MCP streamable-HTTP endpoint
@@ -705,8 +712,8 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
             pass
 
         # Surface telemetry on/off so a quick curl of /health confirms
-        # PostHog wiring on the hosted instance. Returns False on every
-        # self-host install (POSTHOG_API_KEY unset).
+        # whether PostHog is wired up. Returns False whenever
+        # POSTHOG_API_KEY is unset (the default for every install).
         try:
             from . import telemetry
 
