@@ -33,8 +33,10 @@ Please include:
 - The hosted endpoint (`rbi-source.harshil.ai`) and any code path it serves
 - The MCP server code in `src/rbi_source_mcp/`
 - The OAuth ceremonial endpoints (`oauth.py`)
-- The Docker image and Fly deployment surface
 - Supply-chain vulnerabilities in declared dependencies (Python packages in `pyproject.toml`)
+- The corpus build + signing pipeline (`.github/workflows/corpus-release.yml`)
+
+The Docker image, Fly deployment, and Cloudflare configuration that the maintainer's hosted instance runs on live in a separate repo: https://github.com/harshilmathur/rbi-source-deploy. Issues specific to that deployment surface should be reported there, not here.
 
 ## What's out of scope
 

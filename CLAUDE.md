@@ -94,39 +94,17 @@ tests/                       126 unit tests passing, 3 skipped (94 baseline +
 data/db.sqlite              ~250 MB at 768-dim; ~803 docs, ~57k chunks (drifts daily)
 ```
 
-## Hosted endpoint (maintainer's instance — not part of OSS)
+## Hosted endpoint (maintainer's instance — pointer only)
 
-Live at `https://rbi-source.harshil.ai/mcp/`, Mumbai, single machine,
-always-on. Custom domain via Cloudflare DNS (currently orange-cloud /
-proxied).
+Live at `https://rbi-source.harshil.ai/mcp/`. Operational details — Fly app
+config, Dockerfile, Cloudflare custom-domain setup, in-container corpus
+sidecar, operator runbook (release / rollback / token rotation), and the
+version-lockstep contracts (cosign ↔ sigstore-python; `RBI_TRUSTED_PROXY_HEADERS`
+↔ `server_http.py`) — live in the deploy repo:
 
-- Endpoints: `GET /` (banner), `GET /health` (deep check, 503 on
-  empty corpus / sqlite-vec missing degrades to 200 + `degraded: true`),
-  `POST /mcp/` (streamable-HTTP).
-- **In-container auto-update sidecar (v0.8.4+):** `refresh-corpus-local.sh`
-  forks from the entrypoint as the rbi user and polls `latest-corpus`
-  every 6h (jittered ±5%). Skip-fast on unchanged SHA; on new build,
-  downloads + verifies SHA256 + cosign sigstore (pinned to exact
-  `corpus-release.yml@refs/heads/main` workflow identity) + atomic-swaps
-  onto the volume. Fly logs prefix the events with `[refresher]`. The
-  v0.8.4 design notes: the operator-driven `deploy-corpus.sh` is now the
-  manual fallback path; the sidecar is the default.
-- Deploy machinery (fly.toml, Dockerfile, both refresh scripts) lives
-  in the private `~/code/rbi-source-mcp-deploy/` repo, not in this OSS
-  tree.
+→ https://github.com/harshilmathur/rbi-source-deploy
 
-**Version-lockstep contracts the hosted instance depends on:**
-- `cosign` (in the deploy image) must read the bundle format produced
-  by `sigstore/gh-action-sigstore-python` (in `corpus-release.yml`).
-  v3 of sigstore-python writes bundle v0.3, which only cosign 3.x can
-  read. If the OSS workflow's `sigstore/gh-action-sigstore-python`
-  major version moves, bump the `COSIGN_VERSION` ARG in the deploy
-  Dockerfile in the same PR.
-- `RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip` is set in
-  the deploy Dockerfile so `server_http.py`'s rate-limit middleware keys
-  on the real client IP (Cloudflare → Fly chain). Self-host installs
-  leave this unset and use peer IP, which is correct for stdio / local
-  binding.
+The OSS tree ships zero deployment specifics by design.
 
 ## Console scripts
 

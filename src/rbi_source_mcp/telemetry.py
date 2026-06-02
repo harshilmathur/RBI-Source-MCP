@@ -1,10 +1,10 @@
-"""Optional PostHog telemetry for hosted instances.
+"""Optional PostHog telemetry.
 
-Off by default. Activates only when `POSTHOG_API_KEY` is set in the env —
-the maintainer's hosted instance sets this; self-host OSS installs never
-phone home unless the operator opts in.
+Off by default. Activates only when `POSTHOG_API_KEY` is set in the env.
+Install with the optional extra: `pip install "rbi-source-mcp[telemetry]"`
+(or the legacy alias `[hosted]`, kept for back-compat).
 
-What we capture (hosted only):
+What we capture when enabled:
     - tool name (rbi_search / rbi_check_compliance / rbi_get_document / rbi_check_current)
     - latency_ms
     - status (ok / error / input_too_large / db_unavailable / unknown_tool)
@@ -18,14 +18,14 @@ What we do NOT capture:
     - IP, user-agent, or any client identifier beyond the server's own instance id.
 
 The module is structured so that when `POSTHOG_API_KEY` is unset:
-    - posthog is never imported (it's not in pyproject.toml deps)
+    - posthog is never imported (it's not in pyproject.toml main deps)
     - capture_tool_call() is a no-op returning immediately
     - zero allocations, zero network, zero log noise
 
 Distinct ID strategy:
     Anonymous events. We use the server instance id (MCP_INSTANCE_ID, falling back
-    to FLY_MACHINE_ID for the Fly-hosted maintainer instance, or a per-process UUID
-    when neither is set) as the distinct_id and pass `$process_person_profile: false`
+    to FLY_MACHINE_ID for Fly-deployed instances, or a per-process UUID when
+    neither is set) as the distinct_id and pass `$process_person_profile: false`
     so PostHog does NOT build user profiles. The dashboard treats events as
     anonymous server activity. We are counting tool calls and tracking
     error/latency, not users.
@@ -98,7 +98,11 @@ def _init_once() -> None:
     except ImportError:
         logger.warning(
             "telemetry_posthog_not_installed",
-            hint="POSTHOG_API_KEY is set but posthog package not installed; telemetry disabled",
+            hint=(
+                "POSTHOG_API_KEY is set but posthog package not installed; "
+                "telemetry disabled. Install with: "
+                "pip install 'rbi-source-mcp[telemetry]'"
+            ),
         )
         return
 

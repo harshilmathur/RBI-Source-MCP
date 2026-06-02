@@ -51,7 +51,7 @@ The maintainer runs a free, no-auth instance:
 https://rbi-source.harshil.ai/mcp/
 ```
 
-Public, unauthenticated, retrieval-only. Hosted in Mumbai. Every response carries the mandatory legal disclaimer. Rate-limited to 60 req/min/IP.
+Public, unauthenticated, retrieval-only. Every response carries the mandatory legal disclaimer. Operated by the maintainer; deployment config + operator runbook live in the [rbi-source-deploy repo](https://github.com/harshilmathur/rbi-source-deploy).
 
 ```bash
 curl -sS https://rbi-source.harshil.ai/health
@@ -263,6 +263,25 @@ claude mcp add rbi-source -s user -- rbi-source-mcp
 
 `rbi-source-fetch-corpus` always pulls the moving `latest-corpus` release — that's the only on-disk corpus the project publishes. If you need a specific historical corpus for a reproducible deploy or a forensic comparison, every successful run of [`corpus-release.yml`](.github/workflows/corpus-release.yml) attaches a `corpus.sqlite.xz` artifact (30-day retention) you can download from the workflow run page. The build's `corpus_meta` table stamps `build_commit`, `build_run_id`, and the embedding configuration inside the SQLite itself, so a corpus is forensically self-identifying once on disk.
 
+### Custom corpus source
+
+Both `rbi-source-fetch-corpus` and the underlying `fetch_corpus.fetch(...)` accept `--repo` / `--tag` overrides if you publish a corpus to a different GitHub Releases location:
+
+```bash
+rbi-source-fetch-corpus \
+  --repo your-org/your-corpus-fork \
+  --tag  latest-corpus                # or a specific historical tag
+```
+
+Same surface from Python:
+
+```python
+from rbi_source_mcp.fetch_corpus import fetch
+fetch(repo="your-org/your-corpus-fork", tag="latest-corpus")
+```
+
+The defaults (`harshilmathur/RBI-Source-MCP`, `latest-corpus`) are the maintainer's daily build. The asset names (`corpus.sqlite.xz`, `corpus.sqlite.xz.sha256`, `corpus.sqlite.xz.sigstore.json`) are conventions the fetcher expects on the release; a forked corpus pipeline must publish under the same names. Sigstore verification, when enabled, validates against whichever workflow identity the release was signed by.
+
 ### Cryptographic verification (optional)
 
 By default the fetch script verifies SHA256 (mandatory). For full sigstore signature verification against the GitHub Actions OIDC identity:
@@ -315,21 +334,16 @@ The default install is a local stdio MCP, which is what most people want. The HT
 rbi-source-mcp-http --host 0.0.0.0 --port 8080
 ```
 
-If you put a reverse proxy in front (Cloudflare, Fly.io, nginx, Caddy, etc.), set `RBI_TRUSTED_PROXY_HEADERS` to the comma-separated list of headers your proxy uses to forward the real client IP. Without this, per-IP rate limits collapse to a single bucket for all traffic — or worse, can be reset per-request by a forged `X-Forwarded-For` header. As of v0.9, you should ALSO set `RBI_TRUSTED_PROXY_CIDRS` to the egress range of your proxy, so the server only honors those headers from requests whose peer IP is in the allowlist. Common setups:
+If you put a reverse proxy in front (nginx, Caddy, Cloudflare, Fly.io, etc.), set `RBI_TRUSTED_PROXY_HEADERS` to the comma-separated list of headers your proxy uses to forward the real client IP. Without this, per-IP rate limits collapse to a single bucket for all traffic — or worse, can be reset per-request by a forged `X-Forwarded-For` header. As of v0.9, you should ALSO set `RBI_TRUSTED_PROXY_CIDRS` to the egress range of your proxy, so the server only honors those headers from requests whose peer IP is in the allowlist:
 
 ```bash
-# Cloudflare → Fly.io (the maintainer's hosted instance)
-RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip \
-  RBI_TRUSTED_PROXY_CIDRS=173.245.48.0/20,103.21.244.0/22,fdaa::/16 \
-  rbi-source-mcp-http --host 0.0.0.0 --port 8080
-
 # Plain reverse proxy on the same host (nginx, Caddy)
 RBI_TRUSTED_PROXY_HEADERS=x-forwarded-for \
   RBI_TRUSTED_PROXY_CIDRS=127.0.0.0/8 \
   rbi-source-mcp-http --host 0.0.0.0 --port 8080
 ```
 
-Default (both env unset) = peer IP, which is correct for `localhost` / `0.0.0.0` direct exposure. Setting `RBI_TRUSTED_PROXY_HEADERS` without `RBI_TRUSTED_PROXY_CIDRS` falls into a back-compat mode that still honors the header but logs a one-time warning. **Self-hosters running stdio (the default) ignore both of these entirely** — there's no HTTP, no proxy, no rate-limit middleware.
+Default (both env unset) = peer IP, which is correct for `localhost` / `0.0.0.0` direct exposure. Setting `RBI_TRUSTED_PROXY_HEADERS` without `RBI_TRUSTED_PROXY_CIDRS` falls into a back-compat mode that still honors the header but logs a one-time warning. **Self-hosters running stdio (the default) ignore both of these entirely** — there's no HTTP, no proxy, no rate-limit middleware. A Cloudflare → Fly example is documented in the [deploy repo](https://github.com/harshilmathur/rbi-source-deploy).
 
 ### Daily corpus refresh
 

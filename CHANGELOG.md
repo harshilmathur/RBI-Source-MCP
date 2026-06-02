@@ -4,6 +4,14 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### Added
+- `[telemetry]` optional extra alongside `[hosted]`. Both resolve to the same dep list (posthog); `[telemetry]` is the canonical name going forward, `[hosted]` is kept as a back-compat alias (PEP 621 doesn't support extras aliases, so both are listed explicitly). Install with `pip install "rbi-source-mcp[telemetry]"`.
+- `release.yml` now fires a `repository_dispatch` event at the maintainer's separate [rbi-source-deploy](https://github.com/harshilmathur/rbi-source-deploy) repo after a successful PyPI publish. When the `DEPLOY_DISPATCH_TOKEN` secret is configured, the deploy repo opens a Dockerfile-bump PR for the new version. Community forks without the secret see the job skip silently — PyPI release is unaffected.
+- `README.md`: new "Custom corpus source" section documenting `rbi-source-fetch-corpus`'s `--repo` / `--tag` / `--asset` overrides as the public override surface for forks that publish their own corpus.
+
+### Changed
+- `README.md`, `CLAUDE.md`, `SECURITY.md`, plus several code comments: trimmed maintainer-deploy-specific operational details (Cloudflare → Fly chain, Mumbai hosting, sigstore ↔ cosign version-lockstep contracts, Docker image scope). Hosted URL stays prominent in the README; the operational specifics now live in the [rbi-source-deploy](https://github.com/harshilmathur/rbi-source-deploy) repo. No behavior change.
+
 ## [0.9.0] — 2026-06-01
 
 Deep-review remediation: a 6-PR stack closing 46+ findings from a multi-agent code review. The bulk are correctness, architecture, and test-coverage improvements; one user-facing behavior change to call out.

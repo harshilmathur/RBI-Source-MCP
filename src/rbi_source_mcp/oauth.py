@@ -111,10 +111,11 @@ def _verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
 def _public_base(request: Request) -> str:
     """Resolve the externally-visible base URL of this server.
 
-    Behind Cloudflare → Fly, the request looks like:
-        Host: rbi-source.harshil.ai
+    Behind a reverse proxy that terminates TLS, the request typically
+    looks like:
+        Host: <your-public-hostname>
         X-Forwarded-Proto: https
-    But locally and in tests, neither header is set. Build the URL from
+    Locally and in tests, neither header is set. Build the URL from
     whatever we have, defaulting to https for the public deploy.
     """
     proto = request.headers.get("x-forwarded-proto", "https" if request.url.scheme == "https" else "http")
