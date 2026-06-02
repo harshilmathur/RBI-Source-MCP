@@ -16,7 +16,7 @@ rbi-source-fetch-corpus           # ~80 MB sigstore-signed corpus
 # Add to your MCP client: {"mcpServers": {"rbi-source": {"command": "rbi-source-mcp"}}}
 ```
 
-Don't want to install? The maintainer runs a free, no-auth hosted instance — point your client at `https://rbi-source.harshil.ai/mcp/`. Deploy config + operator runbook live in the [rbi-source-deploy repo](https://github.com/harshilmathur/rbi-source-deploy).
+Don't want to install? The maintainer runs a free, no-auth hosted instance at `https://rbi-source.harshil.ai/mcp/` — point your client at that URL instead of running the local stdio binary.
 
 > ⚠️ **Unofficial, community-maintained.** Not affiliated with, endorsed by, or sponsored by the Reserve Bank of India. RBI® is a trademark of the Reserve Bank of India. For takedown or legal inquiries, open an issue.
 
@@ -165,7 +165,7 @@ Takes ~30-60 min. Same pipeline runs daily in [`corpus-release.yml`](.github/wor
 
 ### HTTP transport
 
-Stdio is the default and what most users want. The HTTP transport (`rbi-source-mcp-http`) is here only if you're hosting it for a team. Behind a reverse proxy, set `RBI_TRUSTED_PROXY_HEADERS` to the client-IP header(s) your proxy injects, plus `RBI_TRUSTED_PROXY_CIDRS` to the proxy's egress range — otherwise per-IP rate limits collapse or become spoofable. A Cloudflare → Fly production example is in the [deploy repo](https://github.com/harshilmathur/rbi-source-deploy).
+Stdio is the default and what most users want. The HTTP transport (`rbi-source-mcp-http`) is here for hosting it for a team. Behind a reverse proxy, set `RBI_TRUSTED_PROXY_HEADERS` to the client-IP header(s) your proxy injects (e.g. `x-forwarded-for`, `cf-connecting-ip`, `fly-client-ip`) AND set `RBI_TRUSTED_PROXY_CIDRS` to the proxy's egress range. Without both, per-IP rate limits collapse or become spoofable. Default (env unset) is peer IP, correct for direct exposure on localhost.
 
 ## Roadmap
 
@@ -189,7 +189,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Highest-leverage contributions:
 
 Security: see [SECURITY.md](SECURITY.md). Don't open public issues for vulnerabilities — use a [private security advisory](https://github.com/harshilmathur/RBI-Source-MCP/security/advisories/new).
 
-Telemetry: off by default. Activates only when `POSTHOG_API_KEY` is set in the env. Install with `pip install 'rbi-source-mcp[telemetry]'`. Captures shape-only metadata (tool name, latency, length bucket, error class) — never query text, document IDs, response bodies, or client identifiers. What the maintainer's hosted instance captures is documented in the [deploy repo](https://github.com/harshilmathur/rbi-source-deploy).
+Telemetry: off by default. Activates only when `POSTHOG_API_KEY` is set in the env. Install with `pip install 'rbi-source-mcp[telemetry]'`. When enabled, captures shape-only metadata (tool name, latency, length bucket, error class) — never query text, document IDs, response bodies, or client identifiers. Events are anonymous (`$process_person_profile: false`, `disable_geoip=True`); distinct ID is `MCP_INSTANCE_ID` / `FLY_MACHINE_ID` / synthesized local UUID.
 
 ## License
 

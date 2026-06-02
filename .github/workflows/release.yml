@@ -211,40 +211,36 @@ jobs:
                 gh release edit "$older" --repo "$GITHUB_REPOSITORY" --prerelease
               done
 
-  dispatch-deploy-bump:
-    name: Dispatch bump-PR into deploy repo
-    # Runs after both publish + attach succeed so the deploy bump-PR is
-    # only fired when the release is fully live (PyPI + GH Release both
-    # present). The deploy-side workflow polls PyPI before sed-bumping,
-    # but waiting here too keeps the failure mode "release didn't ship"
-    # rather than "release shipped, deploy repo has a stale PR".
-    #
-    # The "is the secret configured" check happens inside the step,
-    # because `secrets` is not allowed in job-level `if:` conditions.
-    # When DEPLOY_DISPATCH_TOKEN is unset (community forks without a
-    # deploy repo), the step short-circuits with a notice and exits 0.
+  dispatch-downstream:
+    name: Dispatch downstream repo (optional)
+    # Optional hook for a downstream repo to receive a notification when
+    # a new version ships. Operators that maintain a deploy/distribution
+    # repo for this package can set:
+    #   - vars.DOWNSTREAM_DISPATCH_REPO    e.g. "owner/their-deploy-repo"
+    #   - secrets.DOWNSTREAM_DISPATCH_TOKEN fine-grained PAT with
+    #     Contents:write + Pull-requests:write on that repo
+    # And the downstream repo's workflow can `on: repository_dispatch:
+    # types: [mcp-release]` to react. When the variable is unset (the
+    # default for any fork), the job is skipped entirely.
     needs: [publish, attach-release]
+    if: vars.DOWNSTREAM_DISPATCH_REPO != ''
     runs-on: ubuntu-latest
     steps:
-      - name: Fire repository_dispatch into rbi-source-deploy
+      - name: Fire repository_dispatch into downstream repo
         env:
-          # Fine-grained PAT, scoped to harshilmathur/rbi-source-deploy,
-          # permissions: Contents:write + Pull-requests:write. Rotation
-          # cadence + setup instructions live in the deploy repo README's
-          # operator runbook.
-          DEPLOY_DISPATCH_TOKEN: ${{ secrets.DEPLOY_DISPATCH_TOKEN }}
+          DOWNSTREAM_DISPATCH_TOKEN: ${{ secrets.DOWNSTREAM_DISPATCH_TOKEN }}
+          DOWNSTREAM_DISPATCH_REPO: ${{ vars.DOWNSTREAM_DISPATCH_REPO }}
         run: |
           set -euo pipefail
-          if [ -z "${DEPLOY_DISPATCH_TOKEN:-}" ]; then
-            echo "::notice::DEPLOY_DISPATCH_TOKEN secret not configured — skipping deploy dispatch. PyPI release is unaffected."
+          if [ -z "${DOWNSTREAM_DISPATCH_TOKEN:-}" ]; then
+            echo "::notice::vars.DOWNSTREAM_DISPATCH_REPO is set but secrets.DOWNSTREAM_DISPATCH_TOKEN is empty — skipping downstream dispatch. PyPI release is unaffected."
             exit 0
           fi
-          # Strip leading v from the tag (e.g. v0.9.1 -> 0.9.1) so the
-          # deploy-side `pip install rbi-source-mcp==X.Y.Z` line gets a
-          # bare PEP 440 version.
+          # Strip leading v from the tag so the downstream receiver gets
+          # a bare PEP 440 version (e.g. v0.9.1 -> 0.9.1).
           VERSION="${GITHUB_REF_NAME#v}"
-          echo "Dispatching mcp-release event with version=$VERSION"
-          GH_TOKEN="$DEPLOY_DISPATCH_TOKEN" gh api repos/harshilmathur/rbi-source-deploy/dispatches \
+          echo "Dispatching mcp-release event with version=$VERSION to $DOWNSTREAM_DISPATCH_REPO"
+          GH_TOKEN="$DOWNSTREAM_DISPATCH_TOKEN" gh api "repos/$DOWNSTREAM_DISPATCH_REPO/dispatches" \
             -f event_type=mcp-release \
             -F "client_payload[version]=$VERSION"
-          echo "::notice::Dispatch sent. Watch: https://github.com/harshilmathur/rbi-source-deploy/actions/workflows/bump-mcp-version.yml"
+          echo "::notice::Dispatch sent."
