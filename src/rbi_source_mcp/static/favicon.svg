@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <rect width="64" height="64" fill="#0f1a36"/>
-  <text x="32" y="46" font-family="Mukta, 'Source Sans Pro', system-ui, sans-serif"
-        font-weight="700" font-size="44" fill="#faf6ed" text-anchor="middle"
-        dominant-baseline="auto">&#x20B9;</text>
-</svg>

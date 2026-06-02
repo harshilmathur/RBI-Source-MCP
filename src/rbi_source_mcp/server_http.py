@@ -24,7 +24,6 @@ import sqlite3
 import sys
 import time
 from collections.abc import AsyncIterator
-from pathlib import Path
 
 import structlog
 import uvicorn
@@ -33,7 +32,7 @@ from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from . import __version__
@@ -56,40 +55,6 @@ def _wrap_transport_error(payload: dict) -> dict:
         "_llm_instruction": LLM_INSTRUCTION,
         **payload,
     }
-
-# Static homepage. Loaded once at import time and held in memory; mtime is
-# checked on each request to support local dev (edit the file, refresh).
-# Browsers see this; curl + MCP clients still get the JSON banner via
-# Accept-header detection on the / route. See banner() below.
-_STATIC_DIR = Path(__file__).resolve().parent / "static"
-_INDEX_PATH = _STATIC_DIR / "index.html"
-_index_cache: dict[str, object] = {"bytes": None, "mtime": 0.0}
-
-
-def _load_index_html() -> bytes | None:
-    """Return the homepage HTML bytes (cached, mtime-aware). None on miss."""
-    try:
-        st = _INDEX_PATH.stat()
-    except FileNotFoundError:
-        return None
-    if _index_cache["bytes"] is None or st.st_mtime != _index_cache["mtime"]:
-        _index_cache["bytes"] = _INDEX_PATH.read_bytes()
-        _index_cache["mtime"] = st.st_mtime
-    return _index_cache["bytes"]  # type: ignore[return-value]
-
-
-# Whitelist of static files served from /<filename>. Restricting to an
-# explicit allowlist prevents path-traversal nonsense — only these exact
-# filenames map to files under _STATIC_DIR. Add a new entry here when
-# adding a new static asset; never construct the path from request input.
-_STATIC_ALLOWLIST: dict[str, tuple[str, str]] = {
-    "/favicon.ico": ("favicon.ico", "image/x-icon"),
-    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
-    "/favicon-16.png": ("favicon-16.png", "image/png"),
-    "/favicon-32.png": ("favicon-32.png", "image/png"),
-    "/favicon-512.png": ("favicon-512.png", "image/png"),
-    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
-}
 
 
 def _validate_db_at_startup() -> None:
@@ -191,24 +156,6 @@ def _prewarm_embedder_sync() -> None:
             error=str(exc),
             note="server still serves; first real call will retry the load",
         )
-
-
-def _wants_html(request: Request) -> bool:
-    """Decide whether GET / should return the HTML page or the JSON banner.
-
-    Rule: HTML if Accept contains `text/html` AND does NOT contain
-    `application/json`. This routes:
-      - Browsers (Accept: text/html,...) → HTML
-      - curl with no -H              (Accept: */*) → JSON (default)
-      - MCP clients                  (Accept: application/json,...) → JSON
-      - Probes that explicitly want JSON via Accept header → JSON
-
-    The asymmetry is intentional: JSON is the safe default for unknown
-    callers (machine-readable, identical to existing /banner contract).
-    HTML is opt-in via a real browser's Accept header.
-    """
-    accept = (request.headers.get("accept") or "").lower()
-    return "text/html" in accept and "application/json" not in accept
 
 
 logger = structlog.get_logger(__name__)
@@ -726,49 +673,16 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         _health_cache["ts"] = now
         return JSONResponse(payload, status_code=status_code)
 
-    async def banner(request: Request) -> JSONResponse | HTMLResponse:
-        """Dual-purpose landing.
+    async def banner(_: Request) -> JSONResponse:
+        """Corpus-stats JSON landing for GET /.
 
-        - Browsers (Accept includes text/html) get the static HTML homepage,
-          loaded from src/rbi_source_mcp/static/index.html. The HTML page is
-          self-contained (inline CSS, ~10 lines of inline JS for copy
-          buttons) and ships in the wheel.
-        - Everything else (curl with default Accept */*, MCP clients sending
-          Accept: application/json) gets the corpus-stats JSON banner. Same
-          contract as before — the JSON shape did not change.
-
-        The JSON path is cached for 60s; the HTML path is cached in memory
-        with mtime-based invalidation, so editing the file in dev refreshes
-        without restart.
+        Returns a machine-readable banner — name, version, corpus stats,
+        endpoints, and install hints — for every caller, browser or not.
+        Cached for 60s. A deployment that wants a branded HTML homepage
+        layers it on at the transport edge (e.g. an ASGI shim in front of
+        this app); the package itself serves JSON only and has no static
+        assets to ship.
         """
-        if _wants_html(request):
-            html = _load_index_html()
-            if html is not None:
-                return HTMLResponse(
-                    content=html,
-                    headers={
-                        "Cache-Control": "public, max-age=300",
-                        "Content-Security-Policy": (
-                            # Strict-ish CSP: inline styles + inline scripts
-                            # are required for the single-file homepage; no
-                            # external origins permitted.
-                            "default-src 'none'; "
-                            "style-src 'self' 'unsafe-inline'; "
-                            "script-src 'self' 'unsafe-inline'; "
-                            "img-src 'self' data:; "
-                            "connect-src 'self'; "
-                            "form-action 'self'; "
-                            "base-uri 'self'; "
-                            "frame-ancestors 'none'"
-                        ),
-                        "Referrer-Policy": "strict-origin-when-cross-origin",
-                        "X-Content-Type-Options": "nosniff",
-                    },
-                )
-            # Static file missing in this build — fall through to JSON path
-            # rather than 500. Logged once for visibility.
-            logger.warning("static.index_missing", path=str(_INDEX_PATH))
-
         now = time.time()
         cached = _banner_cache["data"]
         cached_ts = float(_banner_cache["ts"])  # type: ignore[arg-type]
@@ -836,41 +750,11 @@ def build_asgi_app(*, stateless: bool = True, json_response: bool = False) -> St
         _banner_cache["ts"] = now
         return JSONResponse(payload)
 
-    async def static_asset(request: Request) -> Response:
-        """Serve a whitelisted static file from src/rbi_source_mcp/static/.
-
-        Looks the request path up in `_STATIC_ALLOWLIST` (path traversal is
-        impossible because the filename is keyed off the URL, not constructed
-        from it). Returns 404 for anything not in the list. Cached for 24h
-        because favicons rarely change and browsers retry on 404.
-        """
-        entry = _STATIC_ALLOWLIST.get(request.url.path)
-        if entry is None:
-            return JSONResponse({"error": "not_found"}, status_code=404)
-        filename, content_type = entry
-        path = _STATIC_DIR / filename
-        try:
-            data = path.read_bytes()
-        except FileNotFoundError:
-            logger.warning("static.asset_missing", path=str(path))
-            return JSONResponse({"error": "not_found"}, status_code=404)
-        return Response(
-            content=data,
-            media_type=content_type,
-            headers={
-                "Cache-Control": "public, max-age=86400, immutable",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-
     app = Starlette(
         debug=False,
         routes=[
             Route("/", banner),
             Route("/health", health),
-            # Favicon set — declared in index.html via <link>. Each is a
-            # whitelisted entry in _STATIC_ALLOWLIST.
-            *[Route(p, static_asset, methods=["GET"]) for p in _STATIC_ALLOWLIST],
             # OAuth 2.1 ceremonial endpoints. Claude.ai's connector flow
             # walks RFC 8414 + RFC 9728 + RFC 7591 BEFORE attempting the
             # MCP handshake; if these 404, the connector says "Couldn't
