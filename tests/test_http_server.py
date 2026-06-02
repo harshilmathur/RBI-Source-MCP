@@ -59,10 +59,12 @@ async def test_banner_returns_corpus_stats_for_json_clients() -> None:
 
 
 @pytest.mark.asyncio
-async def test_banner_returns_html_for_browser_accept() -> None:
-    """When Accept includes text/html (real browsers), GET / returns the
-    static homepage instead of the JSON banner. Asserts the page contains
-    the load-bearing pieces: title, hero, install matrix, disclaimer."""
+async def test_banner_returns_json_for_browser_accept() -> None:
+    """The package serves JSON only — there is no static homepage in the
+    wheel. A browser Accept header (text/html preferred) gets the same
+    corpus-stats JSON banner as any other caller. A deployment that wants a
+    branded HTML page layers it on at the transport edge (e.g. an ASGI shim
+    in front of build_asgi_app); the package itself never returns HTML."""
     from rbi_source_mcp.server_http import build_asgi_app
 
     app = build_asgi_app(stateless=True)
@@ -77,102 +79,43 @@ async def test_banner_returns_html_for_browser_accept() -> None:
                 },
             )
     assert response.status_code == 200
-    assert "text/html" in response.headers.get("content-type", "")
-    body = response.text
-    # Load-bearing structural pieces — if any of these break, the page
-    # has regressed in a way that hurts UX or removes the disclaimer.
-    assert "<!doctype html>" in body.lower()
-    assert "RBI Source MCP" in body
-    assert "https://rbi-source.harshil.ai/mcp/" in body
-    assert "Install in 30s" in body
-    assert "NOT LEGAL ADVICE" in body
-    assert "rbi_check_compliance" in body  # tools section uses underscored names
-    # CSP header present (defense-in-depth on the static page)
-    assert "default-src" in response.headers.get("content-security-policy", "")
+    assert "application/json" in response.headers.get("content-type", "")
+    assert "text/html" not in response.headers.get("content-type", "")
+    payload = response.json()
+    assert payload["name"] == "rbi-source-mcp"
 
 
 @pytest.mark.asyncio
-async def test_favicon_endpoints_serve_with_correct_content_types() -> None:
-    """Each whitelisted favicon URL must serve its file with the right
-    Content-Type and a long Cache-Control. Modern browsers fan out across
-    multiple <link rel="icon">; if any 404s, the user sees a console warning
-    and the browser falls back to /favicon.ico (which is the cheapest probe
-    so we want it to work too)."""
-    from rbi_source_mcp.server_http import build_asgi_app
-
-    cases = [
-        ("/favicon.svg",          "image/svg+xml"),
-        ("/favicon-16.png",       "image/png"),
-        ("/favicon-32.png",       "image/png"),
-        ("/favicon-512.png",      "image/png"),
-        ("/apple-touch-icon.png", "image/png"),
-        ("/favicon.ico",          "image/x-icon"),
-    ]
-    app = build_asgi_app(stateless=True)
-    async with LifespanManager(app):
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            for url, expected_ct in cases:
-                r = await client.get(url)
-                assert r.status_code == 200, f"{url} → {r.status_code}"
-                assert expected_ct in r.headers.get("content-type", ""), (
-                    f"{url} content-type={r.headers.get('content-type')}"
-                )
-                assert "max-age" in r.headers.get("cache-control", ""), (
-                    f"{url} missing cache-control"
-                )
-                assert len(r.content) > 0, f"{url} empty body"
-
-
-@pytest.mark.asyncio
-async def test_static_asset_path_traversal_returns_404() -> None:
-    """The static handler keys off an allowlist, not a constructed file
-    path — but verify defensively that traversal attempts get a clean 404,
-    not a leak. This guards regression if someone ever swaps the allowlist
-    for a `_STATIC_DIR / request.path_params['name']` pattern."""
+async def test_static_paths_return_404() -> None:
+    """The package ships no static assets, so the favicon and homepage paths
+    that the old in-package homepage used to serve now route to nothing and
+    return a clean 404 — never a file leak. Guards against a regression that
+    reintroduces in-package static serving."""
     from rbi_source_mcp.server_http import build_asgi_app
 
     app = build_asgi_app(stateless=True)
     async with LifespanManager(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            # Anything not in _STATIC_ALLOWLIST should miss routing entirely
-            # (Starlette returns 404). This isn't path traversal in the strict
-            # sense, but it's the contract: only listed names are reachable.
-            for url in ("/favicon-99.png", "/index.html", "/server.py", "/etc/passwd"):
+            for url in (
+                "/favicon.ico",
+                "/favicon.svg",
+                "/favicon-32.png",
+                "/apple-touch-icon.png",
+                "/index.html",
+                "/server.py",
+                "/etc/passwd",
+            ):
                 r = await client.get(url)
                 assert r.status_code == 404, f"{url} returned {r.status_code} (expected 404)"
 
 
 @pytest.mark.asyncio
-async def test_homepage_links_to_all_favicon_files() -> None:
-    """The <link rel="icon"> tags in index.html must reference URLs that
-    actually exist as routes. Otherwise tabs render the default browser
-    fallback and the favicon ships dead."""
-    from rbi_source_mcp.server_http import _STATIC_ALLOWLIST, build_asgi_app
-
-    app = build_asgi_app(stateless=True)
-    async with LifespanManager(app):
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            r = await client.get(
-                "/",
-                headers={"Accept": "text/html,application/xhtml+xml"},
-            )
-    body = r.text
-    # Every favicon URL declared in <link rel="icon"> must be in the allowlist.
-    for url in ("/favicon.svg", "/favicon-32.png", "/favicon-16.png",
-                "/apple-touch-icon.png", "/favicon.ico"):
-        assert url in body, f"<link> for {url} missing from index.html"
-        assert url in _STATIC_ALLOWLIST, f"{url} declared in HTML but not whitelisted"
-
-
-@pytest.mark.asyncio
 async def test_banner_returns_json_when_client_explicitly_wants_json() -> None:
     """A client that includes Accept: application/json (most MCP clients do)
-    must get JSON even if it ALSO accepts text/html. The asymmetric rule
-    in `_wants_html` exists to keep machine callers on the JSON contract
-    by default."""
+    gets the JSON banner. This is the only contract now — GET / is JSON for
+    every caller — but the explicit-json case is worth pinning so a future
+    HTML branch can't silently break machine callers."""
     from rbi_source_mcp.server_http import build_asgi_app
 
     app = build_asgi_app(stateless=True)

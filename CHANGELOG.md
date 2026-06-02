@@ -6,11 +6,14 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ### Added
 - `[telemetry]` optional extra alongside `[hosted]`. Both resolve to the same dep list (posthog); `[telemetry]` is the canonical name going forward, `[hosted]` is kept as a back-compat alias (PEP 621 doesn't support extras aliases, so both are listed explicitly). Install with `pip install "rbi-source-mcp[telemetry]"`.
-- `release.yml` now fires a `repository_dispatch` event at the maintainer's separate [rbi-source-deploy](https://github.com/harshilmathur/rbi-source-deploy) repo after a successful PyPI publish. When the `DEPLOY_DISPATCH_TOKEN` secret is configured, the deploy repo opens a Dockerfile-bump PR for the new version. Community forks without the secret see the job skip silently — PyPI release is unaffected.
 - `README.md`: new "Custom corpus source" section documenting `rbi-source-fetch-corpus`'s `--repo` / `--tag` / `--asset` overrides as the public override surface for forks that publish their own corpus.
 
 ### Changed
 - `README.md`, `CLAUDE.md`, `SECURITY.md`, plus several code comments: trimmed maintainer-deploy-specific operational details (Cloudflare → Fly chain, Mumbai hosting, sigstore ↔ cosign version-lockstep contracts, Docker image scope). Hosted URL stays prominent in the README; the operational specifics now live in the [rbi-source-deploy](https://github.com/harshilmathur/rbi-source-deploy) repo. No behavior change.
+- `GET /` on the HTTP transport now returns the corpus-stats JSON banner for **every** caller. Previously a browser `Accept: text/html` header was served an in-package marketing homepage. The package ships no static assets and has no HTML branch; a deployment that wants a branded landing page layers it on at the transport edge (e.g. an ASGI shim in front of `build_asgi_app`). The `/health`, `/mcp`, and JSON-banner contracts are unchanged.
+
+### Removed
+- The in-package static homepage and its serving machinery: `src/rbi_source_mcp/static/` (`index.html` + the favicon set), the `_wants_html` Accept-header branch, the `static_asset` route handler, and the `/favicon*` + `/apple-touch-icon.png` routes. Marketing/branding content (which carried hosted-instance-specific URLs) does not belong in the redistributable package. Favicon and homepage paths now return a clean 404 from the package itself.
 
 ## [0.9.0] — 2026-06-01
 
