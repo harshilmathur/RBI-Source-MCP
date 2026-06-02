@@ -210,37 +210,3 @@ jobs:
                 echo "::notice::demoting prior release to prerelease: $older"
                 gh release edit "$older" --repo "$GITHUB_REPOSITORY" --prerelease
               done
-
-  dispatch-downstream:
-    name: Dispatch downstream repo (optional)
-    # Optional hook for a downstream repo to receive a notification when
-    # a new version ships. Operators that maintain a deploy/distribution
-    # repo for this package can set:
-    #   - vars.DOWNSTREAM_DISPATCH_REPO    e.g. "owner/their-deploy-repo"
-    #   - secrets.DOWNSTREAM_DISPATCH_TOKEN fine-grained PAT with
-    #     Contents:write + Pull-requests:write on that repo
-    # And the downstream repo's workflow can `on: repository_dispatch:
-    # types: [mcp-release]` to react. When the variable is unset (the
-    # default for any fork), the job is skipped entirely.
-    needs: [publish, attach-release]
-    if: vars.DOWNSTREAM_DISPATCH_REPO != ''
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fire repository_dispatch into downstream repo
-        env:
-          DOWNSTREAM_DISPATCH_TOKEN: ${{ secrets.DOWNSTREAM_DISPATCH_TOKEN }}
-          DOWNSTREAM_DISPATCH_REPO: ${{ vars.DOWNSTREAM_DISPATCH_REPO }}
-        run: |
-          set -euo pipefail
-          if [ -z "${DOWNSTREAM_DISPATCH_TOKEN:-}" ]; then
-            echo "::notice::vars.DOWNSTREAM_DISPATCH_REPO is set but secrets.DOWNSTREAM_DISPATCH_TOKEN is empty — skipping downstream dispatch. PyPI release is unaffected."
-            exit 0
-          fi
-          # Strip leading v from the tag so the downstream receiver gets
-          # a bare PEP 440 version (e.g. v0.9.1 -> 0.9.1).
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "Dispatching mcp-release event with version=$VERSION to $DOWNSTREAM_DISPATCH_REPO"
-          GH_TOKEN="$DOWNSTREAM_DISPATCH_TOKEN" gh api "repos/$DOWNSTREAM_DISPATCH_REPO/dispatches" \
-            -f event_type=mcp-release \
-            -F "client_payload[version]=$VERSION"
-          echo "::notice::Dispatch sent."
