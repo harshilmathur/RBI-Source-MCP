@@ -164,8 +164,8 @@ def embed_texts(texts: list[str], *, batch_size: int = 32) -> np.ndarray:
 # fp32 — same input → exact same 768-dim vector — so caching is safe and
 # correct, no staleness concern. Saves a CF round-trip (~250 ms each)
 # when the same query repeats: watchdog probes, popular user questions,
-# load tests. 10,000 entries × ~3 KB = ~30 MB max, fits trivially in our
-# 1 GB Fly machine.
+# load tests. 10,000 entries × ~3 KB = ~30 MB max, fits trivially in a
+# 1 GB container.
 _QUERY_CACHE_MAXSIZE = 10_000
 _QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
 

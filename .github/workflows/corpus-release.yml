@@ -331,8 +331,8 @@ jobs:
         #     work; workflow run logs at .github/actions also persist.
         #
         # Smoke-gate (≥80% absolute + <5pp regression) protects against
-        # shipping broken corpora; the Fly volume's db-prev.sqlite is the
-        # practical rollback for the hosted instance; GH Action workflow
+        # shipping broken corpora; a deployment that retains the prior
+        # corpus snapshot has a practical rollback; GH Action workflow
         # artifacts (retention 30d) provide deeper history.
         #
         # `prerelease: true` keeps the [LATEST] badge on the v0.x.y
