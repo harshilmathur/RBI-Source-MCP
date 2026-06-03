@@ -163,7 +163,7 @@ def capture_tool_call(
         "$process_person_profile": False,
     }
     # Region: prefer MCP_REGION (vendor-neutral); fall back to FLY_REGION for
-    # back-compat with the Fly-hosted instance. The `fly_region` shim was
+    # back-compat with Fly-hosted deployments. The `fly_region` shim was
     # sunset post-v0.8.0 once dashboards had migrated to the vendor-neutral
     # `region` property.
     region = os.environ.get("MCP_REGION") or os.environ.get("FLY_REGION")

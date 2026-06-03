@@ -66,7 +66,7 @@ body:
     id: refresh-context
     attributes:
       label: Was this hit on the hosted endpoint or a self-host?
-      placeholder: hosted (rbi-source.harshil.ai) / self-host (commit SHA + index date)
+      placeholder: hosted instance / self-host (commit SHA + index date)
 
   - type: textarea
     id: notes

@@ -11,13 +11,16 @@ entire RBI corpus. **Retrieval-only by design** — never issues compliance
 verdicts. The legal posture (no-legal-advice disclaimer on every response)
 is load-bearing; do not change it without explicit user direction.
 
-**Status as of v0.8.4 (2026-05-15):** public OSS repo, published on PyPI
+**Status as of v0.9.0 (2026-06-01):** public OSS repo, published on PyPI
 (`pip install rbi-source-mcp`), corpus distributed via signed GitHub
-Releases. Maintainer's hosted demo runs at `rbi-source.harshil.ai` and
-**self-heals the corpus automatically** (in-container sigstore-verified
-sidecar polls `latest-corpus` every 6h). Three-line install works
-end-to-end for any user. SHA-pinned every GHA workflow action, wired
-Dependabot, audited end-to-end via /review + codex adversarial.
+Releases. A maintainer-run hosted instance is available at
+`rbi-source.harshil.ai` (deployment specifics are out of scope for this
+tree — see "Hosted endpoint" below). Three-line install works end-to-end
+for any user. SHA-pinned every GHA workflow action, wired Dependabot,
+audited end-to-end via /review + codex adversarial. `GET /` on the HTTP
+transport now serves a corpus-stats JSON banner to every caller (no
+in-package HTML/favicon — a deployment layers any branded page on at the
+transport edge).
 
 ## Key files
 
@@ -86,10 +89,10 @@ scripts/                     Ops + research tooling, not shipped in the runtime 
   ├─ reembed_to_bge_base.py  Corpus re-embed across providers (A/B testing)
   ├─ eval_dump.py + compare_ab.py + compare_3way.py   Embedding-model bake-off
 
-tests/                       126 unit tests passing, 3 skipped (94 baseline +
-                             28 fetch_corpus + 2 rate-limit + 2 OAuth-bucket;
-                             new ones land in test_http_middleware.py +
-                             test_oauth.py guarding the v0.8.4 security fixes)
+tests/                       192 unit tests passing, 3 skipped. HTTP transport
+                             coverage in test_http_server.py + test_http_middleware.py
+                             (incl. the JSON-only GET / contract: browser Accept
+                             gets JSON, favicon/homepage paths 404)
 data/db.sqlite              ~250 MB at 768-dim; ~803 docs, ~57k chunks (drifts daily)
 ```
 
@@ -186,7 +189,7 @@ All scripts use `RBI_SOURCE_DB` env var (defaults to `./data/db.sqlite`).
 ## Testing
 
 ```bash
-uv run pytest -q                 # 126 unit tests pass, 3 skipped
+uv run pytest -q                 # 192 unit tests pass, 3 skipped
 uv run ruff check src/ tests/    # lint, must be clean
 uv run rbi-source-eval           # corpus quality gate (must pass at ≥80%)
 ```
@@ -216,16 +219,14 @@ publish on ≥80% absolute AND <5pp regression vs the prior release's eval.
 
 | Area | Status |
 |---|---|
-| **PyPI distribution** | ✓ LIVE at `pip install rbi-source-mcp` (v0.8.1, sigstore-signed) |
+| **PyPI distribution** | ✓ LIVE at `pip install rbi-source-mcp` (v0.9.0, sigstore-signed) |
 | **Repo public** | ✓ flipped public 2026-05-05; OSS surface clean |
-| Hosted endpoint (maintainer's demo) | ✓ LIVE at `https://rbi-source.harshil.ai/mcp/` |
-| Custom domain | ✓ rbi-source.harshil.ai via Cloudflare DNS |
-| HTTP transport for hosted mode | ✓ landed — server_http.py + rbi-source-mcp-http console script |
+| Hosted endpoint (maintainer's instance) | ✓ LIVE at `https://rbi-source.harshil.ai/mcp/` (deployment specifics out of scope for this tree) |
+| HTTP transport | ✓ landed — server_http.py + rbi-source-mcp-http console script; `GET /` serves a JSON banner to all callers |
 | Corpus build → GitHub Releases | ✓ corpus-release.yml: daily 02:00 UTC diff + monthly 1st-of-month full; bootstrap completed 2026-05-05; switched from weekly→daily on 2026-05-05 |
 | `rbi-source-fetch-corpus` + `rbi-source-doctor` | ✓ landed in v0.8 |
-| **Hosted-instance corpus auto-update** | ✓ landed in v0.8.4 — in-container sidecar polls latest-corpus every 6h, sigstore-verifies, atomic-swaps. Previously required a manual `deploy-corpus.sh` invocation; drifted 10 days between May 5 and May 15 before catching the gap. |
 | **GHA actions pinned to commit SHAs** | ✓ landed in v0.8.4 — publishing path locked; Dependabot at `.github/dependabot.yml` tracks the `# pin: <name>@<tag>` comments. ci.yml uses tag-based pin (acceptable for non-publishing CI) |
-| **Hosted instance security hardening** | ✓ landed in v0.8.4 — env-gated rate-limit IP (`RBI_TRUSTED_PROXY_HEADERS`), OAuth bucket separation, dim-mismatch warning surfaced, eager DB validation, FTS5 escape internalized, OAuth metadata trimmed to honest set, allow_credentials=False explicit |
+| **Security hardening** | ✓ landed in v0.8.4 — env-gated rate-limit IP (`RBI_TRUSTED_PROXY_HEADERS`), OAuth bucket separation, dim-mismatch warning surfaced, eager DB validation, FTS5 escape internalized, OAuth metadata trimmed to honest set, allow_credentials=False explicit |
 | Press Releases (last 50, no historical backfill) | ✓ live — `BS_PressReleaseDisplay.aspx` top-50 only, by user direction (the page itself doesn't expose deeper history) |
 | Acts & Regulations (statutes) | **Next up — proposed v0.9.** Closes the "statute < MD < amendment" layering for compliance answers. ~10 statutes, low volume, stable |
 | RBI Speeches | Deferred — user signal explicitly against (low compliance signal vs noise) |

@@ -4,7 +4,7 @@
 
 Only the latest commit on `main` is supported. There are no maintained release branches.
 
-The hosted endpoint at `https://rbi-source.harshil.ai/mcp/` always tracks `main` (rolling deploys via Fly.io).
+The hosted endpoint at `https://rbi-source.harshil.ai/mcp/` always tracks `main`.
 
 ## Reporting a vulnerability
 
