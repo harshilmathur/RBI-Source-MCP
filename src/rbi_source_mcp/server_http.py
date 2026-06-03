@@ -354,8 +354,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     curl-friendly and should not count against a user's MCP quota).
 
     Real client IP is taken from `_TRUSTED_PROXY_HEADERS` — only headers
-    the operator explicitly opted into are read. Hosted (Fly behind CF)
-    sets `RBI_TRUSTED_PROXY_HEADERS=cf-connecting-ip,fly-client-ip`.
+    the operator explicitly opted into are read. Behind a reverse proxy /
+    CDN, set `RBI_TRUSTED_PROXY_HEADERS` to the client-IP header(s) your
+    proxy injects (e.g. `x-forwarded-for`, or a CDN's own header).
     Self-host installs leave it unset and use the peer IP. Without this
     gate, any client could send `X-Forwarded-For: 1.2.3.4` and reset
     the bucket per-request.
