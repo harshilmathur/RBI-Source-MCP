@@ -10,13 +10,27 @@
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that brings authoritative Reserve Bank of India regulatory information into any MCP-capable client (Claude Code, Claude.ai, Claude Desktop, ChatGPT, Cursor, Cline, Continue, Goose, Zed, …) with hybrid retrieval over Master Directions, Standalone Circulars, Master Circulars, Press Releases, and FAQs, citation-first responses, and explicit withdrawal/supersession detection.
 
+**Fastest start — no install.** Point any MCP client at the free, no-auth hosted instance:
+
+```
+https://rbi-source.harshil.ai/mcp/
+```
+
+For example, in Claude Code:
+
+```bash
+claude mcp add rbi-source --transport http https://rbi-source.harshil.ai/mcp/
+```
+
+Per-client setup (Claude.ai, ChatGPT, Cursor, …) is in [Connect to your MCP client](#connect-to-your-mcp-client).
+
+Prefer to run it yourself — offline, fully self-hosted, or as a Python library? [Run locally](#run-locally-self-host):
+
 ```bash
 pip install rbi-source-mcp        # or: uv tool install rbi-source-mcp
 rbi-source-fetch-corpus           # ~80 MB sigstore-signed corpus
 # Add to your MCP client: {"mcpServers": {"rbi-source": {"command": "rbi-source-mcp"}}}
 ```
-
-Don't want to install? The maintainer runs a free, no-auth hosted instance at `https://rbi-source.harshil.ai/mcp/` — point your client at that URL instead of running the local stdio binary.
 
 > ⚠️ **Unofficial, community-maintained.** Not affiliated with, endorsed by, or sponsored by the Reserve Bank of India. RBI® is a trademark of the Reserve Bank of India. For takedown or legal inquiries, open an issue.
 
@@ -41,7 +55,9 @@ Plus **~10k withdrawn-circular records** indexed for `rbi_check_current` lookups
 
 Hybrid retrieval = FTS5 (BM25 sparse) + sqlite-vec (`bge-base-en-v1.5` 768-dim dense) fused via Reciprocal Rank Fusion (k=60). Every response carries a mandatory legal disclaimer. Eval gate: ~25 hand-labeled compliance cases at ≥80%, currently 100%.
 
-## Install
+## Run locally (self-host)
+
+Most users should just point their client at the hosted URL above. Run locally when you want it offline, with no dependency on the hosted endpoint, on your own infrastructure, or embedded as a Python library:
 
 ```bash
 uv tool install rbi-source-mcp                 # or: pipx install / pip install
@@ -55,13 +71,15 @@ That's the full install. The default embedding path runs `bge-base-en-v1.5` in-p
 
 ## Connect to your MCP client
 
-| Client | How |
-|---|---|
-| **Claude Code** | `claude mcp add rbi-source -s user -- rbi-source-mcp` (stdio, no URL needed)<br/>Or for the hosted demo: `claude mcp add rbi-source --transport http https://rbi-source.harshil.ai/mcp/` |
-| **Claude Desktop** | `claude_desktop_config.json` → `{"mcpServers": {"rbi-source": {"command": "rbi-source-mcp"}}}` (stdio)<br/>Or paid plan → Settings → Connectors → paste `https://rbi-source.harshil.ai/mcp/` |
-| **Claude.ai / ChatGPT** | Paid plan → Settings → Connectors → paste `https://rbi-source.harshil.ai/mcp/` |
-| **Cursor** | Settings → MCP → Add new → `streamable-http` → `https://rbi-source.harshil.ai/mcp/` |
-| Cline, Continue, Goose, Zed | See [CONNECT.md](docs/CONNECT.md) for client-specific config snippets |
+The hosted endpoint works with any MCP client — no install, just the URL `https://rbi-source.harshil.ai/mcp/`. Self-hosters swap in the local stdio binary (the **Run locally** column; requires the [local install](#run-locally-self-host) above).
+
+| Client | Hosted (no install) | Self-host (stdio) |
+|---|---|---|
+| **Claude Code** | `claude mcp add rbi-source --transport http https://rbi-source.harshil.ai/mcp/` | `claude mcp add rbi-source -s user -- rbi-source-mcp` |
+| **Claude.ai / ChatGPT** | Paid plan → Settings → Connectors → paste `https://rbi-source.harshil.ai/mcp/` | — (remote transport only) |
+| **Claude Desktop** | Paid plan → Settings → Connectors → paste `https://rbi-source.harshil.ai/mcp/` | `claude_desktop_config.json` → `{"mcpServers": {"rbi-source": {"command": "rbi-source-mcp"}}}` |
+| **Cursor** | Settings → MCP → Add new → `streamable-http` → `https://rbi-source.harshil.ai/mcp/` | `{"command": "rbi-source-mcp"}` in `mcp.json` |
+| Cline, Continue, Goose, Zed | See [CONNECT.md](docs/CONNECT.md) | See [CONNECT.md](docs/CONNECT.md) |
 
 After connecting, four tools become available. Try: *"Use the RBI Source MCP. What are the net-worth requirements for a payment aggregator?"*
 
@@ -165,7 +183,7 @@ Takes ~30-60 min. Same pipeline runs daily in [`corpus-release.yml`](.github/wor
 
 ### HTTP transport
 
-Stdio is the default and what most users want. The HTTP transport (`rbi-source-mcp-http`) is here for hosting it for a team. Behind a reverse proxy, set `RBI_TRUSTED_PROXY_HEADERS` to the client-IP header(s) your proxy injects (e.g. `x-forwarded-for`, `cf-connecting-ip`, `fly-client-ip`) AND set `RBI_TRUSTED_PROXY_CIDRS` to the proxy's egress range. Without both, per-IP rate limits collapse or become spoofable. Default (env unset) is peer IP, correct for direct exposure on localhost.
+The hosted endpoint above runs the HTTP transport (`rbi-source-mcp-http`); use it for the zero-install path or to host your own instance for a team. For a local self-host, stdio is the simplest transport. Behind a reverse proxy, set `RBI_TRUSTED_PROXY_HEADERS` to the client-IP header(s) your proxy injects (e.g. `x-forwarded-for`, `cf-connecting-ip`, `fly-client-ip`) AND set `RBI_TRUSTED_PROXY_CIDRS` to the proxy's egress range. Without both, per-IP rate limits collapse or become spoofable. Default (env unset) is peer IP, correct for direct exposure on localhost.
 
 ## Roadmap
 
