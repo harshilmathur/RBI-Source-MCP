@@ -347,9 +347,9 @@ def _build_server() -> Server:
             # Each tool branch wraps its synchronous DB + embedder work in
             # asyncio.to_thread so the event loop is NOT blocked while
             # sentence-transformers runs model.encode() (CPU-bound, ~50-200ms
-            # per call on shared-cpu-1x). Without this wrap, a single client
+            # per call on a small instance). Without this wrap, a single client
             # at modest concurrency could brown out the entire server. See
-            # /cso security review finding #1 (2026-04-29).
+            # security review finding #1 (2026-04-29).
 
             if name == "rbi_check_compliance":
                 text = args.get("text", "") or ""

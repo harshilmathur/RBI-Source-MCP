@@ -28,7 +28,7 @@ Prefer to run it yourself — offline, fully self-hosted, or as a Python library
 
 ```bash
 pip install rbi-source-mcp        # or: uv tool install rbi-source-mcp
-rbi-source-fetch-corpus           # ~80 MB sigstore-signed corpus
+rbi-source-fetch-corpus           # ~140 MB sigstore-signed corpus (compressed)
 # Add to your MCP client: {"mcpServers": {"rbi-source": {"command": "rbi-source-mcp"}}}
 ```
 

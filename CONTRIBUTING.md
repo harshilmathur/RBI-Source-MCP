@@ -20,11 +20,11 @@ cd RBI-Source-MCP
 
 # uv is the project's package manager (https://docs.astral.sh/uv/)
 uv sync                # install dev + runtime deps
-uv run pytest          # ~190 unit tests, must pass green
+uv run pytest          # ~192 unit tests, must pass green
 uv run ruff check .    # lint, must pass clean (whole repo, matches CI)
 ```
 
-To populate a local corpus (one-time, ~1-2 hours; downloads ~135 MB embedding model on first index run):
+To populate a local corpus (one-time, ~1-2 hours; downloads the ~440 MB `bge-base-en-v1.5` embedding model on first index run):
 
 ```bash
 uv run rbi-source-crawl                                # documents + withdrawn metadata
@@ -43,7 +43,7 @@ Before opening a PR:
 - `uv run pytest` — every unit test green
 - `uv run ruff check .` — clean (whole repo, including `scripts/`)
 - `uv run rbi-source-eval` — pass rate ≥ 80% (currently 100%)
-- `scripts/integration_test_public.py` — passes against the live endpoint (only relevant if your change touches the HTTP surface; CI doesn't run this)
+- If your change touches the HTTP transport, exercise `tests/test_http_server.py` and `tests/test_http_middleware.py` (banner/health/MCP routing, rate-limit + body-size middleware) — both run under `pytest`.
 
 CI runs the first two on every push and PR.
 

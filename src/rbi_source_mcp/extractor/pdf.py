@@ -2,7 +2,7 @@
 
 v0.1.5 ships with the simplest possible quality gate: extraction succeeded
 if the resulting text is non-empty and at least 80% of pages produced text.
-The richer quality gate from /plan-eng-review (≥90% pages text-extractable
+The richer quality gate from an engineering-design review (≥90% pages text-extractable
 + ≥3 paragraphs/page) lives in v0.5 alongside the multi-MD pipeline.
 
 Output is a `PdfExtraction` carrying the full text, a sha256 hash, the page

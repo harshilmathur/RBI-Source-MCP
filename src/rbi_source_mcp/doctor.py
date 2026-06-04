@@ -380,21 +380,13 @@ def check_cf_creds_when_provider_cf() -> Check:
             detail="$CF_ACCOUNT_ID + $CF_API_TOKEN both set",
             elapsed_ms=elapsed,
         )
-    creds_file = Path("~/.gstack/cloudflare.json").expanduser()
-    if creds_file.exists():
-        return Check(
-            name="cf_creds",
-            status="OK",
-            detail=f"creds file at {creds_file}",
-            elapsed_ms=elapsed,
-        )
     return Check(
         name="cf_creds",
         status="FAIL",
         detail="RBI_EMBEDDING_PROVIDER=cloudflare but no CF creds found",
         fix=(
-            "set $CF_ACCOUNT_ID + $CF_API_TOKEN, OR write {\"account_id\":..., \"api_token\":...} "
-            "to ~/.gstack/cloudflare.json. See https://dash.cloudflare.com/profile/api-tokens"
+            "set $CF_ACCOUNT_ID + $CF_API_TOKEN. Create a token at "
+            "https://dash.cloudflare.com/profile/api-tokens (Workers AI: Read)."
         ),
         elapsed_ms=elapsed,
     )

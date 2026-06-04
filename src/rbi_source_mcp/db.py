@@ -551,7 +551,7 @@ def _stamp_schema_version(conn: sqlite3.Connection) -> None:
     Read-only mounts: the get_meta read works fine; the set_meta write
     on a fresh corpus would fail, which we tolerate (the corpus stamp is
     a build-time concern; a read-only-mounted corpus is by definition
-    already built and stamped). Caught by /review #6 (v0.7.1).
+    already built and stamped). Caught by code review #6 (v0.7.1).
     """
     existing = get_meta(conn, "schema_version")
     if existing is not None:
