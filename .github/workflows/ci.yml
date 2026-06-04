@@ -11,7 +11,12 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 20 min (was 10): the suite exercises the local sentence-transformers path,
+    # which downloads the ~440 MB bge-base model on first use. With a warm HF
+    # cache (below) a run finishes in ~2 min; the bump only covers a cold-cache
+    # run (cache miss after a model-key change) where the download happens live
+    # and previously tipped a lane over the 10-min limit.
+    timeout-minutes: 20
 
     strategy:
       matrix:
@@ -25,6 +30,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
+
+      # Cache the HuggingFace model store so the ~440 MB bge-base download
+      # happens at most once per cache key instead of on every run (and dodges
+      # anonymous HF Hub rate limits, which were stalling the 3.13 lane). The
+      # files are Python-version-independent, so all matrix lanes share one key;
+      # bump the key suffix if the default embedding model/revision ever changes
+      # (see src/rbi_source_mcp/embedding_config.py).
+      - name: Cache HuggingFace model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-bge-base-en-v1.5-${{ runner.os }}
 
       - name: Install package + dev deps
         # v0.7.0: sentence-transformers is now in main deps (not an extra),
