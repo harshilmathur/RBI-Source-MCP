@@ -25,7 +25,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from ._common import USER_AGENT
+from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
 
@@ -71,8 +71,7 @@ def crawl(client: httpx.Client | None = None, *, timeout: float = 30.0) -> Maste
         own_client = False
     try:
         logger.info("master_circular_list.fetch.index", url=INDEX_URL)
-        resp = client.get(INDEX_URL)
-        resp.raise_for_status()
+        resp = get_with_retry(client, INDEX_URL)
         index_html = resp.text
         raw_sha = hashlib.sha256(resp.content).hexdigest()
 
@@ -83,8 +82,7 @@ def crawl(client: httpx.Client | None = None, *, timeout: float = 30.0) -> Maste
         seen_pdfs: set[str] = set()
         for cat_label, cat_url in categories:
             try:
-                cat_resp = client.get(cat_url)
-                cat_resp.raise_for_status()
+                cat_resp = get_with_retry(client, cat_url)
             except httpx.HTTPError as exc:
                 logger.warning("master_circular_list.category_fail", url=cat_url, error=str(exc))
                 continue

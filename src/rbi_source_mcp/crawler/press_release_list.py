@@ -23,7 +23,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from ._common import USER_AGENT
+from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
 
@@ -64,8 +64,7 @@ def crawl(client: httpx.Client | None = None, *, timeout: float = 30.0) -> Press
         own_client = False
     try:
         logger.info("press_release_list.fetch.start", url=LIST_URL)
-        resp = client.get(LIST_URL)
-        resp.raise_for_status()
+        resp = get_with_retry(client, LIST_URL)
         html = resp.text
         raw_sha = hashlib.sha256(resp.content).hexdigest()
         prs = parse_list_html(html, base_url=str(resp.url))

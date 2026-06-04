@@ -27,7 +27,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from ._common import USER_AGENT
+from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
 
@@ -64,8 +64,7 @@ def fetch_detail(md_id: str, *, client: httpx.Client | None = None, timeout: flo
         own_client = False
     try:
         logger.info("md_detail.fetch.start", md_id=md_id, url=url)
-        resp = client.get(url)
-        resp.raise_for_status()
+        resp = get_with_retry(client, url)
         html = resp.text
         raw_sha = hashlib.sha256(resp.content).hexdigest()
         primary, annexures = _extract_pdf_urls(html, base_url=str(resp.url))

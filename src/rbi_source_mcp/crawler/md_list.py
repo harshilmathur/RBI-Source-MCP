@@ -22,7 +22,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup, Tag
 
-from ._common import USER_AGENT
+from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
 
@@ -105,8 +105,7 @@ def fetch_list_page(
 
     try:
         logger.info("fetch.start", url=LIST_URL)
-        response = client.get(LIST_URL)
-        response.raise_for_status()
+        response = get_with_retry(client, LIST_URL)
         logger.info(
             "fetch.ok",
             status=response.status_code,
