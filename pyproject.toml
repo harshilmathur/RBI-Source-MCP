@@ -1,7 +1,7 @@
 [project]
 name = "rbi-source-mcp"
 version = "0.9.0"
-description = "An MCP server for RBI Master Directions: version-aware, citation-first, knows what's withdrawn."
+description = "An MCP server for RBI regulatory source material (Master Directions, Circulars, Press Releases, FAQs): version-aware, citation-first, knows what's withdrawn."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -40,11 +40,10 @@ dependencies = [
     # v0.7.0: sentence-transformers + torch are now bundled as main deps so
     # `pip install rbi-source-mcp` works zero-config for local stdio users —
     # no Cloudflare account required. Pulls CPU-only torch (~250 MB on disk),
-    # downloads bge-small-en-v1.5 (~135 MB) on first use to ~/.cache/huggingface.
+    # downloads bge-base-en-v1.5 (~440 MB) on first use to ~/.cache/huggingface.
     # Operators who don't want torch on the box can set
-    # RBI_EMBEDDING_PROVIDER=cloudflare and the local model never loads.
-    # Autoplan UC1 review: user accepted the install-size trade for the
-    # zero-config-no-CF-account UX. See .gstack/plan-local-first.md.
+    # RBI_EMBEDDING_PROVIDER=cloudflare and the local model never loads — the
+    # install-size trade buys a zero-config, no-API-account local UX.
     "sentence-transformers>=3.0.0",
 ]
 

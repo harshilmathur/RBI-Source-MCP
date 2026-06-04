@@ -17,8 +17,7 @@ Provider notes:
 
     cloudflare
         POSTs to https://api.cloudflare.com/client/v4/accounts/<ACCT>/ai/run/<MODEL>.
-        Reads creds from $CF_ACCOUNT_ID + $CF_API_TOKEN, OR from
-        ~/.gstack/cloudflare.json {"account_id":..., "api_token":...}.
+        Reads creds from $CF_ACCOUNT_ID + $CF_API_TOKEN.
         CF directly serves the BGE family on their GPUs — no third-party
         provider in the path, free at <10k req/day.
 
@@ -36,9 +35,7 @@ Model+dim defaults:
 
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
 
 PROVIDER = (os.environ.get("RBI_EMBEDDING_PROVIDER") or "local").strip().lower()
 
@@ -82,17 +79,16 @@ LOCAL_MODEL_REVISION: str = os.environ.get("RBI_LOCAL_MODEL_REVISION", "main")
 
 
 def cloudflare_creds() -> tuple[str, str]:
-    """Return (account_id, api_token). Raises if neither env nor file is set."""
+    """Return (account_id, api_token) from the environment. Raises if unset.
+
+    Only consulted when RBI_EMBEDDING_PROVIDER=cloudflare. The default
+    `local` provider needs no credentials.
+    """
     acct = os.environ.get("CF_ACCOUNT_ID")
     token = os.environ.get("CF_API_TOKEN")
     if acct and token:
         return acct, token
-    cred_file = Path.home() / ".gstack" / "cloudflare.json"
-    if cred_file.exists():
-        data = json.loads(cred_file.read_text())
-        if "account_id" in data and "api_token" in data:
-            return data["account_id"], data["api_token"]
     raise RuntimeError(
-        "Cloudflare creds missing. Set $CF_ACCOUNT_ID + $CF_API_TOKEN, "
-        "or write {'account_id': ..., 'api_token': ...} to ~/.gstack/cloudflare.json"
+        "Cloudflare creds missing. Set $CF_ACCOUNT_ID and $CF_API_TOKEN "
+        "(required only when RBI_EMBEDDING_PROVIDER=cloudflare)."
     )

@@ -181,7 +181,7 @@ _health_cache: dict[str, object] = {"data": None, "status_code": 200, "ts": 0.0}
 # parsed the request body, so an attacker can already burn memory by POSTing
 # multi-MB bodies. 200 KB is plenty for the largest legitimate MCP call
 # (32 KB text + JSON-RPC envelope + a few headers); reject everything bigger
-# at the middleware layer before parsing. Caught by /cso review (#4, 2026-04-29).
+# at the middleware layer before parsing. Caught by a security review (#4, 2026-04-29).
 MAX_REQUEST_BODY_BYTES = 200_000
 
 # Per-IP rate limit (fixed window). Public unauthenticated endpoint, no auth,
@@ -190,7 +190,7 @@ MAX_REQUEST_BODY_BYTES = 200_000
 # for legitimate MCP clients (which batch tool calls in conversation), tight
 # enough to make a tight-loop attacker visible. /health and / are excluded
 # (orchestrator probes hit /health every 30s; banner is curl-friendly).
-# Caught by /cso review (#2, 2026-04-29).
+# Caught by a security review (#2, 2026-04-29).
 RATE_LIMIT_PER_WINDOW = 60
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 

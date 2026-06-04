@@ -17,7 +17,7 @@ Releases. A maintainer-run hosted instance is available at
 `rbi-source.harshil.ai` (deployment specifics are out of scope for this
 tree — see "Hosted endpoint" below). Three-line install works end-to-end
 for any user. SHA-pinned every GHA workflow action, wired Dependabot,
-audited end-to-end via /review + codex adversarial. `GET /` on the HTTP
+audited end-to-end with adversarial code review. `GET /` on the HTTP
 transport now serves a corpus-stats JSON banner to every caller (no
 in-package HTML/favicon — a deployment layers any branded page on at the
 transport edge).
@@ -238,25 +238,10 @@ publish on ≥80% absolute AND <5pp regression vs the prior release's eval.
 | Public stats page from telemetry | PostHog dashboard exists for maintainer; public page not built |
 | `compare_versions` tool | Blocked on `document_versions` |
 | `find_updates` tool | Blocked on amendment-chain extraction |
-| MCP Registry submissions | Content prepared at `.gstack/mcp-registry-submissions.md`; user click-through pending |
+| MCP Registry submissions | Submission content prepared; listing pending |
 
-## Project memory
+## Design history
 
-Design history, premise locks, DX/eng/CEO review artifacts, and per-session
-timeline live in `~/.gstack/projects/rbimcp/` (locally, not in repo). Read
-those when resuming work to recover full context — especially the design
-doc which captures all five locked premises and the v2 reframe.
-
-## Skill routing
-
-When the user's request matches an available skill, invoke it via the Skill
-tool as the first action.
-
-- "review this PR" / "code review" → invoke `review`
-- "ship this" / "create PR" / "deploy" → invoke `ship`
-- "is this worth building" / "brainstorm" → invoke `office-hours`
-- "test the site" / "find bugs" → invoke `qa`
-- "debug this" / "why broken" / 500 error → invoke `investigate`
-- "weekly retro" / "what did we ship" → invoke `retro`
-- "architecture review" / "review the plan" → invoke `plan-eng-review`
-- "save progress" / "checkpoint" → invoke `checkpoint`
+The CHANGELOG and git history are the public record of what shipped and why.
+Architectural rationale lives in module/function docstrings and the per-PR
+descriptions; read those when resuming work to recover context.

@@ -45,7 +45,7 @@ Please include:
 
 ## Hardening notes
 
-The current security posture (audited via `/cso` 2026-04-29):
+The current security posture (last security-audited 2026-04-29):
 
 - Per-IP rate limit (60 req/60s) on `/mcp/`
 - 200 KB request-body cap, enforced before parsing

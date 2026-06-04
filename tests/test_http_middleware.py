@@ -1,10 +1,10 @@
-"""Tests for the HTTP middleware introduced after /cso review (2026-04-29).
+"""Tests for the HTTP middleware introduced after a security review (2026-04-29).
 
 Two middlewares to guard:
     - MaxBodySizeMiddleware: rejects requests with Content-Length > 200 KB
-      BEFORE Starlette parses the body. /cso finding #4.
+      BEFORE Starlette parses the body. Security-review finding #4.
     - RateLimitMiddleware: per-IP fixed window. 60 req per 60 s. Excludes
-      /health (Fly probes) and / (banner). /cso finding #2.
+      /health (orchestrator probes) and / (banner). Security-review finding #2.
 
 These tests boot the ASGI app in-process and hit it via httpx.AsyncClient.
 """

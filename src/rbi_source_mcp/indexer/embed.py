@@ -20,7 +20,6 @@ from __future__ import annotations
 import os
 import time
 from functools import lru_cache
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -248,6 +247,5 @@ def active_backend() -> dict[str, object]:
         "provider": cfg.PROVIDER,
         "model": MODEL_NAME,
         "dim": EMBEDDING_DIM,
-        "cf_account_id_set": bool(os.environ.get("CF_ACCOUNT_ID"))
-        or (Path("~/.gstack/cloudflare.json").expanduser().exists()),
+        "cf_account_id_set": bool(os.environ.get("CF_ACCOUNT_ID")),
     }
