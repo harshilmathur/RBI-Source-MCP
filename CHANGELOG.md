@@ -5,6 +5,7 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 ## [Unreleased]
 
 ### Added
+- **Crawler retry + exponential backoff** for transient fetch failures, via a shared `crawler/_common.get_with_retry` helper applied to all 11 RBI HTML fetch sites (list + detail pages). Retries on RBI WAF anti-bot responses (418/403), rate limits (429), 5xx, and `httpx` transport errors with `~2s, ~4s` backoff; non-retryable statuses (404, …) still raise on the first attempt, and the final attempt raises exactly as before (fail-closed preserved — a genuinely-down source aborts the build rather than shipping a partial corpus). Fixes scheduled CI corpus builds intermittently failing when RBI's WAF 418-blocks the GitHub Actions runner's datacenter IP.
 - `[telemetry]` optional extra alongside `[hosted]`. Both resolve to the same dep list (posthog); `[telemetry]` is the canonical name going forward, `[hosted]` is kept as a back-compat alias (PEP 621 doesn't support extras aliases, so both are listed explicitly). Install with `pip install "rbi-source-mcp[telemetry]"`.
 - `README.md`: new "Pin or fork the corpus" section documenting `rbi-source-fetch-corpus`'s `--repo` / `--tag` overrides as the public override surface for forks that publish their own corpus.
 

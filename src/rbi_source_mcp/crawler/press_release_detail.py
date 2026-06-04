@@ -13,7 +13,7 @@ from datetime import datetime
 import httpx
 import structlog
 
-from ._common import USER_AGENT
+from ._common import USER_AGENT, get_with_retry
 from .notif_detail import (
     NotifDetailResult,
     _extract_html_body,
@@ -40,8 +40,7 @@ def fetch_detail(prid: str, *, client: httpx.Client | None = None, timeout: floa
         own_client = False
     try:
         logger.info("press_release_detail.fetch.start", prid=prid, url=url)
-        resp = client.get(url)
-        resp.raise_for_status()
+        resp = get_with_retry(client, url)
         html = resp.text
         title = _extract_title(html)
         primary, annexures = _extract_pdf_urls(html, base_url=str(resp.url))

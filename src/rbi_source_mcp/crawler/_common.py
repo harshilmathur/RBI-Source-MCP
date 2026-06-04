@@ -12,14 +12,81 @@ repeatable helpers.
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Callable
 from datetime import datetime
 from urllib.parse import urlparse
+
+import httpx
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 #: Canonical User-Agent string identifying this client to rbi.org.in.
 #: Prior to PR 2, eight crawler modules carried the right value and one
 #: (`md_detail.py`) had a typo (`"messaging.rbi-source-mcp"`). Pinning here
 #: removes the drift surface entirely.
 USER_AGENT = "rbi-source-mcp/0.1 (+https://github.com/harshilmathur/RBI-Source-MCP)"
+
+#: HTTP status codes worth retrying. RBI's WAF/anti-bot layer intermittently
+#: returns 418 ("I'm a teapot" / unknown) or 403 to requests from datacenter
+#: IP ranges (this is what breaks scheduled CI corpus builds — a runner IP gets
+#: flagged on one attempt and clears on the next); 429 is rate limiting; 5xx are
+#: transient server errors. Non-retryable 4xx (404, 410, …) raise immediately.
+_RETRYABLE_STATUS: frozenset[int] = frozenset({403, 408, 418, 425, 429, 500, 502, 503, 504})
+
+
+def get_with_retry(
+    client: httpx.Client,
+    url: str,
+    *,
+    attempts: int = 3,
+    backoff_base: float = 2.0,
+    sleep: Callable[[float], None] = time.sleep,
+    **kwargs: object,
+) -> httpx.Response:
+    """GET ``url`` with retry + exponential backoff on transient failures.
+
+    Retries on `_RETRYABLE_STATUS` responses (RBI WAF 418/403, 429, 5xx) and on
+    `httpx.TransportError` (connect/read/timeout). Backoff is
+    ``backoff_base * 2**attempt`` seconds (~2s, ~4s by default for 3 attempts).
+
+    The final attempt — whether a retryable status or the last transport error —
+    raises exactly as before (`raise_for_status()` / the transport exception),
+    so callers keep their existing fail-closed behavior; a non-retryable status
+    (e.g. 404) raises on the first attempt without waiting. `sleep` is injectable
+    so tests don't actually block; extra kwargs forward to `client.get` (e.g. a
+    per-request `headers=`).
+    """
+    for attempt in range(attempts):
+        is_last = attempt == attempts - 1
+        try:
+            resp = client.get(url, **kwargs)  # type: ignore[arg-type]
+        except httpx.TransportError as exc:
+            if is_last:
+                raise
+            logger.warning(
+                "crawler.fetch.retry",
+                url=url,
+                attempt=attempt + 1,
+                attempts=attempts,
+                error=str(exc),
+            )
+            sleep(backoff_base * (2**attempt))
+            continue
+        if resp.status_code in _RETRYABLE_STATUS and not is_last:
+            logger.warning(
+                "crawler.fetch.retry",
+                url=url,
+                attempt=attempt + 1,
+                attempts=attempts,
+                status=resp.status_code,
+            )
+            sleep(backoff_base * (2**attempt))
+            continue
+        resp.raise_for_status()
+        return resp
+    raise AssertionError("get_with_retry: loop exhausted without return/raise")  # unreachable
 
 
 def clean_text(text: str | None) -> str:

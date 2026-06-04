@@ -31,7 +31,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from ._common import USER_AGENT
+from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
 
@@ -82,8 +82,7 @@ def fetch_list_page(
         own_client = False
     try:
         logger.info("circular_list.fetch.start", url=LIST_URL)
-        resp = client.get(LIST_URL)
-        resp.raise_for_status()
+        resp = get_with_retry(client, LIST_URL)
         logger.info(
             "circular_list.fetch.ok",
             status=resp.status_code,

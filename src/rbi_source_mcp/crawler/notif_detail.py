@@ -26,7 +26,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from ._common import USER_AGENT
+from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
 
@@ -62,8 +62,7 @@ def fetch_detail(notif_id: str, *, client: httpx.Client | None = None, timeout: 
         own_client = False
     try:
         logger.info("notif_detail.fetch.start", notif_id=notif_id, url=url)
-        resp = client.get(url)
-        resp.raise_for_status()
+        resp = get_with_retry(client, url)
         html = resp.text
         raw_sha = hashlib.sha256(resp.content).hexdigest()
         title = _extract_title(html)
