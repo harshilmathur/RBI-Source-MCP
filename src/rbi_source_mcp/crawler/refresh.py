@@ -22,11 +22,11 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import structlog
 
+from .._time import iso_utc_now
 from ..db import connect, record_crawl_run, upsert_md, upsert_withdrawn
 from . import md_list, withdrawn_list
 
@@ -68,7 +68,7 @@ def run() -> int:
     db_path = Path(os.environ.get("RBI_SOURCE_DB_NEW", DEFAULT_DB_PATH)).expanduser().resolve()
     logger.info("refresh.start", db=str(db_path))
 
-    md_started = datetime.utcnow().isoformat() + "Z"
+    md_started = iso_utc_now()
     md_error: str | None = None
     md_result: md_list.CrawlResult | None = None
     try:
@@ -77,7 +77,7 @@ def run() -> int:
         md_error = f"{type(exc).__name__}: {exc}"
         logger.error("refresh.md_list.fail", error=md_error)
 
-    wd_started = datetime.utcnow().isoformat() + "Z"
+    wd_started = iso_utc_now()
     wd_error: str | None = None
     wd_result: withdrawn_list.WithdrawnCrawlResult | None = None
     try:
@@ -90,7 +90,7 @@ def run() -> int:
         logger.error("refresh.both_failed", md_error=md_error, wd_error=wd_error)
         return 1
 
-    now = datetime.utcnow().isoformat() + "Z"
+    now = iso_utc_now()
 
     with connect(db_path) as conn:
         if md_result is not None:

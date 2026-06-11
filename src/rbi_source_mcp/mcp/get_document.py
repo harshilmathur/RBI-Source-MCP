@@ -17,8 +17,9 @@ Amendment chain field ships at v1.1.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
 from typing import Any
+
+from .._time import iso_utc_now
 
 
 def get_document(
@@ -29,7 +30,7 @@ def get_document(
     as_of: str | None = None,
 ) -> dict[str, Any]:
     """Fetch a document by canonical ID. Always returns a structured envelope."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = iso_utc_now()
     response: dict[str, Any] = {
         "document_id": document_id,
         "as_of": now,
@@ -44,8 +45,8 @@ def get_document(
 
     if as_of:
         response["caveat"] = (
-            "as_of parameter accepted but not honored at v0.1.5; ships at v1.1. "
-            "Returning current version."
+            "as_of parameter accepted but not honored yet (point-in-time version "
+            "selection ships in a later release). Returning the current version."
         )
 
     cur = conn.execute("SELECT * FROM documents WHERE document_id = ?", (document_id,))
@@ -54,8 +55,8 @@ def get_document(
         response["status"] = "unknown"
         response["error"] = "document_not_in_corpus"
         response["message"] = (
-            f"No document found with id={document_id!r}. v0.1.5 corpus is limited "
-            "to indexed Master Directions; broader coverage at v0.5+."
+            f"No document found with id={document_id!r}. The corpus covers Master "
+            "Directions, Standalone Circulars, Master Circulars, Press Releases, and FAQs."
         )
         return response
 

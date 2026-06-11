@@ -16,11 +16,11 @@ import hashlib
 import json
 import re
 import sqlite3
-from datetime import datetime
 from typing import Any
 
 import structlog
 
+from .._time import iso_utc_now
 from .chunk import chunk_md_text
 from .embed import EMBEDDING_DIM, embed_texts, to_sqlite_vec_bytes
 
@@ -73,7 +73,7 @@ def persist_document_and_chunks(
     embedder cost on every unchanged document during the daily refresh.
     Set `force=True` to bypass (used by the monthly full-rebuild).
     """
-    now = datetime.utcnow().isoformat() + "Z"
+    now = iso_utc_now()
     pdf_urls = pdf_urls or []
 
     # Content-hash skip-fast: if body_text hasn't changed since last index,

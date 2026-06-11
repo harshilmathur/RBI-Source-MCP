@@ -8,11 +8,11 @@ We just point at a different URL template.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
 
 import httpx
 import structlog
 
+from .._time import iso_utc_now
 from ._common import USER_AGENT, get_with_retry
 from .notif_detail import (
     NotifDetailResult,
@@ -49,7 +49,7 @@ def fetch_detail(prid: str, *, client: httpx.Client | None = None, timeout: floa
             notif_id=prid,
             detail_url=url,
             final_url=str(resp.url),
-            fetched_at=datetime.utcnow().isoformat() + "Z",
+            fetched_at=iso_utc_now(),
             status_code=resp.status_code,
             raw_html=html,
             raw_html_sha256=hashlib.sha256(resp.content).hexdigest(),

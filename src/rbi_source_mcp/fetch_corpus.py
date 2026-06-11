@@ -498,23 +498,35 @@ def _atomic_rename_into_place(staging: Path, final: Path) -> None:
     partial.unlink(missing_ok=True)
 
     try:
-        # Try the same-filesystem fast path: move staging → partial. If
-        # they're on different filesystems this raises OSError (EXDEV).
-        os.rename(staging, partial)
-    except OSError:
-        # Cross-fs: byte-copy + fsync, then atomic rename within final.parent.
-        shutil.copy2(staging, partial)
         try:
-            with partial.open("rb") as f:
-                os.fsync(f.fileno())
+            # Same-filesystem fast path: move staging → partial. Different
+            # filesystems raise OSError (EXDEV) → byte-copy fallback below.
+            os.rename(staging, partial)
         except OSError:
-            # fsync isn't supported on all filesystems (e.g., some FUSE
-            # mounts); proceed without it, the rename is still atomic.
-            pass
-        staging.unlink(missing_ok=True)
+            # Cross-fs: byte-copy + fsync, then atomic rename within final.parent.
+            shutil.copy2(staging, partial)
+            try:
+                with partial.open("rb") as f:
+                    os.fsync(f.fileno())
+            except OSError:
+                # fsync isn't supported on all filesystems (e.g., some FUSE
+                # mounts); proceed without it, the rename is still atomic.
+                pass
+            staging.unlink(missing_ok=True)
 
-    # Atomic on the destination filesystem regardless of how partial got there.
-    os.replace(partial, final)
+        # Atomic on the destination filesystem regardless of how partial got there.
+        os.replace(partial, final)
+    except OSError as exc:
+        # Disk full / permission error during the copy or final swap. Don't let
+        # it escape as a raw traceback — clean up the stray .partial and abort
+        # with the module's structured PROBLEM/CAUSE/FIX message. The existing
+        # corpus (if any) at `final` is untouched.
+        partial.unlink(missing_ok=True)
+        _abort(
+            problem=f"Could not install the corpus to {final}.",
+            cause=f"{type(exc).__name__}: {exc} (commonly: disk full, or no write permission on the target).",
+            fix="free up disk space (~250 MB uncompressed) or choose a writable path via --to, then retry.",
+        )
 
 
 # ---------------------------------------------------------------------------

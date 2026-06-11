@@ -31,6 +31,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup, Tag
 
+from .._time import iso_utc_now
 from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
@@ -219,7 +220,7 @@ def crawl(client: httpx.Client | None = None) -> WithdrawnCrawlResult:
     raw_sha = hashlib.sha256(response.content).hexdigest()
     withdrawn = parse_list_html(html, base_url=str(response.url))
     return WithdrawnCrawlResult(
-        fetched_at=datetime.utcnow().isoformat() + "Z",
+        fetched_at=iso_utc_now(),
         source_url=LIST_URL,
         final_url=str(response.url),
         status_code=response.status_code,

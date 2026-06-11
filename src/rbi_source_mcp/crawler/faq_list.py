@@ -22,6 +22,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
+from .._time import iso_utc_now
 from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
@@ -73,7 +74,7 @@ def crawl(client: httpx.Client | None = None, *, timeout: float = 30.0) -> FaqCr
         faqs = parse_list_html(html, base_url=str(resp.url))
         logger.info("faq_list.parse.ok", count=len(faqs))
         return FaqCrawlResult(
-            fetched_at=datetime.utcnow().isoformat() + "Z",
+            fetched_at=iso_utc_now(),
             source_url=LIST_URL,
             final_url=str(resp.url),
             status_code=resp.status_code,

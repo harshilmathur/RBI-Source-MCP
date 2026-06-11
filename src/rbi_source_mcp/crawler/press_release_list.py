@@ -16,13 +16,13 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from urllib.parse import urljoin, urlparse
 
 import httpx
 import structlog
 from bs4 import BeautifulSoup
 
+from .._time import iso_utc_now
 from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
@@ -70,7 +70,7 @@ def crawl(client: httpx.Client | None = None, *, timeout: float = 30.0) -> Press
         prs = parse_list_html(html, base_url=str(resp.url))
         logger.info("press_release_list.parse.ok", count=len(prs))
         return PressReleaseCrawlResult(
-            fetched_at=datetime.utcnow().isoformat() + "Z",
+            fetched_at=iso_utc_now(),
             source_url=LIST_URL,
             final_url=str(resp.url),
             status_code=resp.status_code,

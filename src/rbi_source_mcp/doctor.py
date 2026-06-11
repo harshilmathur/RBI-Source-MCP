@@ -204,7 +204,9 @@ def check_corpus(corpus_path: Path) -> Check:
             elapsed_ms=int((time.perf_counter() - t0) * 1000),
         )
     try:
-        with sqlite3.connect(str(corpus_path)) as conn:
+        # Read-only, like every other reader (a diagnostic must never create or
+        # mutate the corpus, e.g. WAL sidecars on a packaged read-only file).
+        with sqlite3.connect(f"file:{corpus_path}?mode=ro", uri=True) as conn:
             doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
             chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             schema_row = conn.execute(
@@ -341,7 +343,7 @@ def check_local_model_present() -> Check:
     model_subdir = "models--" + _cfg.MODEL.replace("/", "--")
     model_dir = base / "hub" / model_subdir
     elapsed = int((time.perf_counter() - t0) * 1000)
-    if model_dir.exists() and any(model_dir.iterdir()):
+    if model_dir.is_dir() and any(model_dir.iterdir()):
         return Check(
             name="local_model",
             status="OK",

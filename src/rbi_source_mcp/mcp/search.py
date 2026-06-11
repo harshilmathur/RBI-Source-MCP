@@ -16,11 +16,11 @@ Differences from check_compliance:
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
 from typing import Any
 
 import structlog
 
+from .._time import iso_utc_now
 from ..db import escape_fts5_query, hybrid_search
 from .topics import TOPIC_TO_MD_ID as _TOPIC_TO_MD_ID
 
@@ -86,7 +86,7 @@ def search(
     limit: int = 5,
 ) -> dict[str, Any]:
     """Hybrid (FTS5-only at v0.1.5) retrieval. Always returns a structured envelope."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = iso_utc_now()
     filters = filters or {}
     raw = (query or "").strip()
 
@@ -96,8 +96,9 @@ def search(
         "filters": filters,
         "as_of": now,
         "caveat": (
-            "v0.5 hybrid retrieval (FTS5 sparse + sqlite-vec dense, RRF fused). "
-            "Corpus limited to indexed Master Directions."
+            "Hybrid retrieval (FTS5 sparse + sqlite-vec dense, RRF fused) over "
+            "Master Directions, Standalone Circulars, Master Circulars, Press "
+            "Releases, and FAQs."
         ),
         "tool": "rbi_search",
     }
