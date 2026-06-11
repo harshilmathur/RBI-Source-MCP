@@ -88,6 +88,15 @@ from ._bulk import BulkResult as _BulkResult  # noqa: E402  (legacy private alia
 def run_bulk(*, db_path: Path | None = None, skip_already: bool = True, sleep_between: float = 0.4) -> _BulkResult:
     db_path = Path(db_path or os.environ.get("RBI_SOURCE_DB", DEFAULT_DB_PATH)).expanduser().resolve()
     crawl_result = master_circular_list.crawl()
+    if not crawl_result.is_complete:
+        # A category page failed after retries — indexing the partial set would
+        # silently drop a whole department. Fail closed; the monthly full
+        # rebuild (or a re-run) recovers once RBI/WAF is healthy.
+        raise RuntimeError(
+            "master-circular crawl is partial — "
+            f"{len(crawl_result.failed_categories)}/{crawl_result.categories_total} "
+            f"categories failed ({crawl_result.failed_categories}); refusing to index a partial set"
+        )
     targets = crawl_result.master_circulars
     logger.info("mc_bulk.discovered", count=len(targets))
 

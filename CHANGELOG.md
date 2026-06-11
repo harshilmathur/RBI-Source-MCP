@@ -5,6 +5,11 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 ## [Unreleased]
 
 ### Fixed
+- **Crawler freshness + reliability (from the deep review):**
+  - `refresh.py` now diffs each MD crawl against the existing corpus: it records real `items_added`/`changed`/`removed` audit counts (were always 0) and marks MDs that dropped off the RBI list `superseded` instead of leaving them `current` forever. Removal is **guarded** — if the current list is under 80% of the previously-known count (a likely partial/failed crawl), removals are skipped so a short read can't mass-supersede good documents.
+  - `md_list._extract_date` no longer falls back to a bare 4-digit year (often scraped from a year inside the title) as a fake `last_updated_at` — it returns `None` when no full date parses.
+  - `pdf_fetch` now routes through `get_with_retry`, so a transient WAF 403/429/5xx no longer permanently drops a document; a persistent failure returns a graceful `is_pdf=False` result (unchanged for the indexer) instead of raising.
+  - `master_circular_list` fails closed on a partial crawl: it raises if the index yields zero categories, tracks failed category pages (`is_complete`), and `build_master_circular_index` now aborts rather than indexing a silently-partial master-circular family.
 - **Dense retrieval silently returned zero results under a topic/`md_id` filter.** `search_chunks_vec` set the sqlite-vec KNN `k = limit` and then applied the `md_id`/withdrawn filters in Python *after* retrieval — so whenever a `topic_hint` (which maps to an `md_id`) was set, the document's chunks usually weren't among the global nearest, the dense ranker contributed nothing, and hybrid search silently degraded to FTS5-only. Worse, `rbi_check_compliance`'s `both_rankers_agree` signal could never fire under a topic hint, forcing `low_confidence=true` on every topic-filtered compliance check. Now: an `md_id` filter uses an exact `vec_distance_L2` scan scoped to that one document's chunks, and the unfiltered path over-fetches the KNN before the withdrawn-status drop so a cluster of withdrawn docs can't empty the dense side. Verified on the live corpus (e.g. `payment_aggregator`, `kyc_bank` topic filters now return dense results with `both_rankers_agree`).
 
 ### Added

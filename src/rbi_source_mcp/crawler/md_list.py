@@ -242,8 +242,11 @@ def _extract_date(row: Tag) -> str | None:
     the whole row's joined text so a year embedded in a title (e.g.,
     "...KYC) Directions, 2016") doesn't beat the actual date cell.
 
-    Returns ISO 8601 if any cell parses cleanly. Falls back to a 4-digit year
-    only if no cell yielded a full date. Returns None if nothing matches.
+    Returns ISO 8601 if any cell parses cleanly, else None. The field this
+    feeds (`last_updated_at`) is typed ISO-or-None; we must NOT emit a bare
+    4-digit year (a non-ISO string), which previously got scraped out of a
+    year embedded in the title (e.g. "...KYC) Directions, 2016") and stored
+    as a fake last-updated date. A missing date is honest; a wrong one isn't.
     """
     if not row:
         return None
@@ -259,10 +262,7 @@ def _extract_date(row: Tag) -> str | None:
         if iso:
             return iso
 
-    # Fallback: look for any 4-digit year across the whole row.
-    text = " ".join(cell_texts)
-    year_match = re.search(r"\b(20\d{2})\b", text)
-    return year_match.group(1) if year_match else None
+    return None
 
 
 # Attempt format pairs: each regex pattern with a list of strptime formats to
