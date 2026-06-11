@@ -160,7 +160,10 @@ async def test_rate_limit_isolates_clients_by_ip() -> None:
     Otherwise an attacker on IP A would lock out a legitimate user on IP B.
 
     We forge `Fly-Client-IP` (which the middleware reads) since both
-    requests come from the same in-process ASGITransport."""
+    requests come from the same in-process ASGITransport. Header trust now
+    requires a CIDR allowlist too, so the test peer (127.0.0.1) is whitelisted."""
+    import ipaddress
+
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
     from starlette.routing import Route
@@ -171,15 +174,15 @@ async def test_rate_limit_isolates_clients_by_ip() -> None:
         return JSONResponse({"ok": True})
 
     app = Starlette(routes=[Route("/mcp/{path:path}", echo, methods=["POST"])])
-    # Explicitly opt into the Fly-Client-IP header. The middleware default
-    # is empty (peer IP only) so any caller can't spoof XFF; tests that
-    # exercise proxy-header behavior pass the trusted set explicitly,
-    # mirroring the production Dockerfile env config.
+    # Opt into the Fly-Client-IP header AND a CIDR allowlist covering the
+    # asgi-transport peer (127.0.0.0/8) — header trust now requires both,
+    # mirroring the production env config.
     app.add_middleware(
         RateLimitMiddleware,
         limit=2,
         window_s=60.0,
         trusted_proxy_headers=("fly-client-ip",),
+        trusted_proxy_cidrs=(ipaddress.ip_network("127.0.0.0/8"),),
     )
     app.add_middleware(MaxBodySizeMiddleware)
 
@@ -292,6 +295,41 @@ async def test_rate_limit_strict_cidr_gate_honors_trusted_peer() -> None:
             "/mcp/x", json={"i": 0}, headers={"Fly-Client-IP": "10.0.0.99"}
         )
         assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_headers_ignored_without_cidr_gate() -> None:
+    """Strict default: when trusted-proxy HEADERS are configured but no CIDR
+    allowlist is, the headers are NOT trusted — the middleware buckets by the
+    immediate peer IP. So a spoofer cycling fake Fly-Client-IP values can't
+    escape the peer's bucket. (Previously this was 'back-compat mode' that
+    honored headers without a CIDR gate, making the limiter bypassable.)"""
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    from rbi_source_mcp.server_http import RateLimitMiddleware
+
+    async def echo(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/mcp/{path:path}", echo, methods=["POST"])])
+    app.add_middleware(
+        RateLimitMiddleware,
+        limit=2,
+        window_s=60.0,
+        trusted_proxy_headers=("fly-client-ip",),
+        # No trusted_proxy_cidrs → headers must be ignored.
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for i in range(2):
+            r = await client.post("/mcp/x", json={"i": i}, headers={"Fly-Client-IP": f"1.2.3.{i}"})
+            assert r.status_code == 200
+        # Different spoofed header, but same peer → 429 (header was ignored).
+        r = await client.post("/mcp/x", json={"i": 9}, headers={"Fly-Client-IP": "9.9.9.9"})
+        assert r.status_code == 429
 
 
 @pytest.mark.asyncio
