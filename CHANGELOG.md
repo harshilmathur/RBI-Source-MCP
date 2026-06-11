@@ -4,6 +4,9 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 
 ## [Unreleased]
 
+### Security
+- **Trusted-proxy headers are now ignored unless a CIDR allowlist is also set (strict default).** Previously, setting `RBI_TRUSTED_PROXY_HEADERS` without `RBI_TRUSTED_PROXY_CIDRS` ran in a "back-compat" mode that honored the client-controlled header (e.g. `cf-connecting-ip`) with no check that the request actually came through the proxy — so any client could spoof the header and reset their per-IP rate-limit bucket every request, fully bypassing the limiter. Now header trust requires **both** the header opt-in **and** a CIDR allowlist that the request peer falls inside; otherwise the immediate peer IP is used. **Behavior change:** self-hosters who set `RBI_TRUSTED_PROXY_HEADERS` without `RBI_TRUSTED_PROXY_CIDRS` must now also set the CIDR range (the proxy's egress) for the client-IP header to be honored. Default (both unset) is unchanged: peer IP.
+
 ### Fixed
 - **Indexer data-integrity (from the deep review):**
   - A single mid-loop `chunks_vec` insert failure no longer disables dense insertion for *all remaining* chunks (it previously left a mostly-FTS-only document). Failures are tracked, not cascaded.

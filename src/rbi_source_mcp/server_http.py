@@ -413,39 +413,41 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return any(ip_obj in net for net in self.trusted_proxy_cidrs)
 
     def _client_ip(self, request: Request) -> str:
-        # Header trust is gated on:
-        #   1. The operator opted in to a header list via env, AND
-        #   2. Either the operator also opted in to a CIDR allowlist
-        #      and the request peer is in it (strict mode), OR no CIDR
-        #      allowlist is configured (back-compat mode — preserves
-        #      existing deployments that set HEADERS but never set
-        #      CIDRS). In back-compat mode we log a one-time warning
-        #      at the call site to nudge operators toward strict mode.
+        # Header trust requires BOTH:
+        #   1. The operator opted in to a header list (RBI_TRUSTED_PROXY_HEADERS), AND
+        #   2. The operator opted in to a CIDR allowlist (RBI_TRUSTED_PROXY_CIDRS)
+        #      AND the request peer is inside it.
         #
-        # The default for both env vars is empty → fall through to peer
-        # IP, which is the right answer for self-host installs running
-        # on localhost or bare VMs without a reverse proxy.
+        # If headers are set but no CIDR allowlist is configured, the headers
+        # are NOT trusted (we fall back to peer IP). Honoring a client-controlled
+        # header without checking the peer is actually a proxy lets any client
+        # spoof their rate-limit bucket — defeating the limiter entirely. This
+        # is a deliberate strict default (changed from the old back-compat mode
+        # that honored headers without a CIDR gate); operators behind a proxy
+        # must set RBI_TRUSTED_PROXY_CIDRS to the proxy's egress range.
+        #
+        # The default for both env vars is empty → peer IP, the right answer for
+        # self-host installs on localhost or bare VMs without a reverse proxy.
         peer = request.client.host if request.client else "unknown"
         if not self.trusted_proxy_headers:
             return peer
-        # Strict mode: CIDR configured → enforce peer-in-CIDR.
-        if self.trusted_proxy_cidrs and not self._peer_in_trusted_cidr(peer):
+        if not self.trusted_proxy_cidrs:
+            # Headers opted in but no CIDR gate → do NOT trust headers.
+            if not getattr(self, "_proxy_cidr_warned", False):
+                logger.warning(
+                    "trusted_proxy.headers_ignored_no_cidr",
+                    hint=(
+                        "RBI_TRUSTED_PROXY_HEADERS is set but RBI_TRUSTED_PROXY_CIDRS"
+                        " is unset, so proxy headers are IGNORED and the immediate peer"
+                        " IP is used. Set RBI_TRUSTED_PROXY_CIDRS to the proxy's egress"
+                        " range to honor the client-IP header behind your proxy."
+                    ),
+                )
+                self._proxy_cidr_warned = True
             return peer
-        # Back-compat mode: no CIDR configured, but operator set the
-        # header list — read it but warn (rate-limited so we don't spam).
-        if not self.trusted_proxy_cidrs and not getattr(
-            self, "_proxy_cidr_warned", False
-        ):
-            logger.warning(
-                "trusted_proxy.no_cidr_gate",
-                hint=(
-                    "RBI_TRUSTED_PROXY_HEADERS is set but RBI_TRUSTED_PROXY_CIDRS"
-                    " is unset. Header values will be honored without a CIDR check,"
-                    " which lets any client spoof the rate-limit bucket. Set"
-                    " RBI_TRUSTED_PROXY_CIDRS to the proxy egress range to harden."
-                ),
-            )
-            self._proxy_cidr_warned = True
+        # CIDR configured → honor headers only from a peer inside the allowlist.
+        if not self._peer_in_trusted_cidr(peer):
+            return peer
         for header in self.trusted_proxy_headers:
             v = request.headers.get(header)
             if v:
