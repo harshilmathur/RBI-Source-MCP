@@ -22,7 +22,7 @@ from typing import Any
 import structlog
 
 from .chunk import chunk_md_text
-from .embed import embed_texts, to_sqlite_vec_bytes
+from .embed import EMBEDDING_DIM, embed_texts, to_sqlite_vec_bytes
 
 logger = structlog.get_logger(__name__)
 
@@ -94,10 +94,27 @@ def persist_document_and_chunks(
             """,
             (document_id, document_id),
         ).fetchone()
+        # Dense coverage must be complete too, or a half-embedded document
+        # (chunk_count>0 but missing vectors — e.g. a transient mid-loop insert
+        # failure) would be skipped forever and never self-heal until the
+        # monthly full rebuild. When sqlite-vec is unavailable the chunks_vec
+        # table is absent — treat dense as N/A so FTS-only builds still skip.
+        dense_complete = True
+        if prior_row is not None and prior_row["chunk_count"] > 0:
+            try:
+                dense_count = conn.execute(
+                    "SELECT COUNT(*) FROM chunks_vec v JOIN chunks c ON c.rowid = v.rowid "
+                    "WHERE c.document_id = ?",
+                    (document_id,),
+                ).fetchone()[0]
+                dense_complete = dense_count >= prior_row["chunk_count"]
+            except sqlite3.OperationalError:
+                dense_complete = True  # no vector table → FTS-only build
         if (
             prior_row is not None
             and prior_row["text_sha256"] == body_sha
             and prior_row["chunk_count"] > 0
+            and dense_complete
         ):
             # Touch last_seen_at so corpus-meta freshness checks still update.
             conn.execute(
@@ -196,7 +213,21 @@ def persist_document_and_chunks(
         embeddings = None
         embeddings_ok = False
 
+    # Fail closed on a dimension misconfiguration: it's systematic (every doc
+    # would otherwise silently persist FTS-only against a corpus the query
+    # embedder can't match), so abort the build rather than ship a degraded
+    # corpus. A transient embed *failure* above is still a graceful FTS-only
+    # degrade that the content-hash skip-path re-embeds on the next run.
+    if embeddings_ok and embeddings is not None and embeddings.shape[1] != EMBEDDING_DIM:
+        raise ValueError(
+            f"embedding dimension {embeddings.shape[1]} != configured "
+            f"EMBEDDING_DIM={EMBEDDING_DIM} for document {document_id} — refusing to "
+            "persist a corpus the query embedder won't match (check "
+            "RBI_EMBEDDING_MODEL / RBI_EMBEDDING_DIM)"
+        )
+
     pdf_url_for_chunks = pdf_artifact.get("pdf_url") if pdf_artifact else None
+    dense_failures = 0
     for i, c in enumerate(chunks):
         text_sha = hashlib.sha256(c.text.encode("utf-8")).hexdigest()
         cur = conn.execute(
@@ -230,8 +261,24 @@ def persist_document_and_chunks(
                     (rowid, to_sqlite_vec_bytes(embeddings[i])),
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("persist.chunks_vec.insert_fail", error=str(exc))
-                embeddings_ok = False
+                # Do NOT disable dense insertion for the remaining chunks: a
+                # single transient failure must not cascade into a mostly
+                # FTS-only document. Track it; an incomplete result is caught by
+                # the skip-path's dense-coverage check and re-embedded next run.
+                if dense_failures == 0:
+                    logger.warning("persist.chunks_vec.insert_fail", error=str(exc))
+                dense_failures += 1
+
+    # Partial dense coverage (some vectors failed, not all): surface it loudly.
+    # The skip-path's dense-coverage check will re-embed this doc next run.
+    if embeddings_ok and 0 < dense_failures < len(chunks):
+        logger.error(
+            "persist.chunks_vec.partial",
+            document_id=document_id,
+            failed=dense_failures,
+            total=len(chunks),
+            note="document persisted with incomplete dense coverage; will re-embed next run",
+        )
 
     if pdf_artifact:
         conn.execute(

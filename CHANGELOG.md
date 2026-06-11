@@ -5,6 +5,12 @@ All notable changes to RBI Source MCP. Format follows [Keep a Changelog](https:/
 ## [Unreleased]
 
 ### Fixed
+- **Indexer data-integrity (from the deep review):**
+  - A single mid-loop `chunks_vec` insert failure no longer disables dense insertion for *all remaining* chunks (it previously left a mostly-FTS-only document). Failures are tracked, not cascaded.
+  - The content-hash skip-fast path now also requires **complete dense coverage**, so a half-embedded document (chunks present, some vectors missing) re-embeds on the next daily run instead of persisting the gap until the monthly full rebuild. (FTS-only builds without sqlite-vec still skip unchanged docs.)
+  - A **dimension misconfiguration fails closed**: `persist_document_and_chunks` raises if the embedder's output dim doesn't match the configured `EMBEDDING_DIM`, rather than silently shipping an FTS-only corpus the query embedder can't match.
+  - `chunk_md_text` now accounts for the form-feed (`\x0c`) page separator on non-empty pages, so `char_start`/`char_end` citation locators no longer drift one byte earlier per page (they map back to the source text; `get_document` reconstructs via `ORDER BY char_start`).
+  - The Cloudflare embedder verifies each batch returns exactly as many vectors as requested, guarding against a short/over-long response misaligning embeddings with chunks.
 - **Crawler freshness + reliability (from the deep review):**
   - `refresh.py` now diffs each MD crawl against the existing corpus: it records real `items_added`/`changed`/`removed` audit counts (were always 0) and marks MDs that dropped off the RBI list `superseded` instead of leaving them `current` forever. Removal is **guarded** — if the current list is under 80% of the previously-known count (a likely partial/failed crawl), removals are skipped so a short read can't mass-supersede good documents.
   - `md_list._extract_date` no longer falls back to a bare 4-digit year (often scraped from a year inside the title) as a fake `last_updated_at` — it returns `None` when no full date parses.

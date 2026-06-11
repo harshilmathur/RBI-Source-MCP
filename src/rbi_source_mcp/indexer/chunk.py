@@ -190,6 +190,13 @@ def chunk_md_text(
             buffer.append(line.rstrip("\n"))
             char_offset += len(line)
 
+        # Account for the form-feed (\x0c) that separated this page from the
+        # next — matching the empty-page branch above. Without it, char offsets
+        # drift one byte earlier per page and the stored char_start/char_end
+        # citation locators stop mapping back to the source text (get_document
+        # reconstructs via ORDER BY char_start).
+        char_offset += 1
+
         # Flush at page end ONLY if we hit a new top-level on the next page.
         # Don't flush here — paragraphs commonly span pages.
 

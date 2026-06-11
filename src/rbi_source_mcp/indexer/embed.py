@@ -118,7 +118,15 @@ def _cf_embed(texts: list[str]) -> np.ndarray:
                         raise RuntimeError(
                             f"CF Workers AI returned success=false: {data.get('errors')}"
                         )
-                    out.extend(data["result"]["data"])
+                    vectors = data["result"]["data"]
+                    # Guard against a short/over-long batch response silently
+                    # misaligning vectors with their source chunks downstream.
+                    if len(vectors) != len(batch):
+                        raise RuntimeError(
+                            f"CF Workers AI returned {len(vectors)} vectors for a batch of "
+                            f"{len(batch)} — refusing to misalign embeddings with chunks"
+                        )
+                    out.extend(vectors)
                     break
                 # 429/5xx → backoff + retry once
                 if r.status_code in (429, 500, 502, 503, 504) and attempt == 0:
