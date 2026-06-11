@@ -677,6 +677,12 @@ def search_chunks_fts(
     return cur.fetchall()
 
 
+# How many extra candidates the KNN over-fetches before the withdrawn-status
+# drop, so a cluster of withdrawn docs near the query can't empty the dense
+# side. Only applies to the no-md_id path (the md_id path filters in SQL).
+_VEC_OVERFETCH = 8
+
+
 def search_chunks_vec(
     conn: sqlite3.Connection,
     query_embedding: bytes,
@@ -693,9 +699,18 @@ def search_chunks_vec(
     Fails silently with an empty list if chunks_vec is missing (extension didn't
     load, or no chunks have been embedded yet) so callers can fall back to
     sparse-only retrieval.
+
+    Filtering note: vec0's KNN (`MATCH ... AND k = ?`) ranks over the WHOLE
+    vector table and cannot be scoped to a subset inside the MATCH. Filtering
+    the top-k afterward in Python silently returns nothing whenever the
+    qualifying rows aren't among the global nearest — which is the common case
+    under an `md_id` (topic_hint) filter. So we take two paths:
+      - `md_id` set → exact brute-force `vec_distance_L2` scan over that one
+        document's (small) chunk set, status-filtered in SQL. No guessing.
+      - `md_id` None → KNN MATCH, but over-fetch k so the post-retrieval
+        withdrawn-status drop can't empty the dense side, then truncate.
     """
-    sql = """
-        SELECT
+    select_cols = """
             c.chunk_id,
             c.document_id,
             c.md_id,
@@ -709,26 +724,41 @@ def search_chunks_vec(
             d.detail_url     AS document_url,
             d.last_updated_at,
             d.status,
-            v.distance       AS vec_distance
-        FROM chunks_vec v
-        JOIN chunks    c ON c.rowid = v.rowid
-        LEFT JOIN documents d ON d.document_id = c.document_id
-        WHERE v.embedding MATCH ? AND k = ?
     """
-    params: list[object] = [query_embedding, limit]
-    # Vec0 doesn't natively support filtering on joined columns inside its
-    # MATCH clause, so we filter after the K-NN retrieval. Pull more
-    # candidates (k = limit * over) to compensate for filtered drops.
-    sql += " ORDER BY v.distance ASC"
+    status_clause = "" if include_withdrawn else " AND COALESCE(d.status, 'current') = 'current'"
+    if md_id is not None:
+        sql = f"""
+            SELECT {select_cols}
+            vec_distance_L2(v.embedding, ?) AS vec_distance
+            FROM chunks c
+            JOIN chunks_vec v ON v.rowid = c.rowid
+            LEFT JOIN documents d ON d.document_id = c.document_id
+            WHERE c.md_id = ?{status_clause}
+            ORDER BY vec_distance ASC
+            LIMIT ?
+        """
+        params: list[object] = [query_embedding, md_id, limit]
+    else:
+        # Over-fetch only when a status drop is possible (include_withdrawn=False).
+        k = limit if include_withdrawn else max(limit * _VEC_OVERFETCH, limit)
+        sql = f"""
+            SELECT {select_cols}
+            v.distance       AS vec_distance
+            FROM chunks_vec v
+            JOIN chunks    c ON c.rowid = v.rowid
+            LEFT JOIN documents d ON d.document_id = c.document_id
+            WHERE v.embedding MATCH ? AND k = ?
+            ORDER BY v.distance ASC
+        """
+        params = [query_embedding, k]
     try:
         cur = conn.execute(sql, params)
     except sqlite3.OperationalError as exc:
         logger.warning("vec_search.unavailable", error=str(exc))
         return []
     rows = cur.fetchall()
-    if md_id is not None:
-        rows = [r for r in rows if r["md_id"] == md_id]
-    if not include_withdrawn:
+    if md_id is None and not include_withdrawn:
+        # KNN path filters status in Python (vec0 can't), then truncate.
         rows = [r for r in rows if (r["status"] or "current") == "current"]
     return rows[:limit]
 

@@ -211,6 +211,120 @@ def test_rrf_formula_uses_k_60(tmp_path: Path) -> None:
         assert results[0]["fusion_score"] == pytest.approx(expected, abs=1e-9)
 
 
+def test_dense_search_returns_results_under_md_id_filter(tmp_path: Path) -> None:
+    """The dense ranker MUST contribute under an md_id (topic_hint) filter,
+    even when the document's chunks are not among the GLOBAL nearest vectors.
+
+    Regression for the k=limit-then-post-filter bug: vec0's KNN ranked over the
+    whole table, so a topic-filtered search whose chunks weren't globally
+    nearest got an empty dense side — silently collapsing hybrid to FTS-only
+    and forcing low_confidence on every topic-filtered compliance check.
+    """
+    from rbi_source_mcp.db import search_chunks_vec
+
+    db_path = tmp_path / "mdfilter.sqlite"
+    with connect(db_path) as conn:
+        dim = _detect_embedding_dim(conn)
+        if dim is None:
+            pytest.skip("sqlite-vec extension not available")
+
+        _seed_document(conn, document_id="rbi:master_direction:1", md_id="1")
+        _seed_document(conn, document_id="rbi:master_direction:2", md_id="2")
+        query_vec = [1.0] + [0.0] * (dim - 1)
+
+        # md_id "1": 20 chunks essentially AT the query — they dominate the
+        # global nearest-neighbour ranking.
+        for i in range(20):
+            _seed_chunk(
+                conn,
+                chunk_id=f"a{i}",
+                document_id="rbi:master_direction:1",
+                md_id="1",
+                text=f"kyc cluster {i}",
+                embedding=[1.0, 0.0005 * i] + [0.0] * (dim - 2),
+            )
+        # md_id "2": one chunk, near-ish but farther than every md_id-1 chunk.
+        _seed_chunk(
+            conn,
+            chunk_id="target",
+            document_id="rbi:master_direction:2",
+            md_id="2",
+            text="kyc target chunk",
+            embedding=[0.9, 0.4] + [0.0] * (dim - 2),
+        )
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+
+        # Direct dense search with the md_id filter + a small limit: the old
+        # code returned [] here (top-k all md_id-1, post-filtered away).
+        dense = search_chunks_vec(conn, _f32_vec(query_vec), limit=5, md_id="2")
+        assert [r["chunk_id"] for r in dense] == ["target"], (
+            "dense search must return the md_id-2 chunk even though 20 md_id-1 "
+            "chunks are globally nearer"
+        )
+
+        # End-to-end: dense_rank must be populated so both_rankers_agree can fire.
+        results = hybrid_search(
+            conn,
+            fts_query="kyc target",
+            query_embedding=_f32_vec(query_vec),
+            limit=5,
+            md_id="2",
+            fetch_per_side=5,
+        )
+        by_id = {r["chunk_id"]: r for r in results}
+        assert "target" in by_id
+        assert by_id["target"]["dense_rank"] is not None, (
+            "dense ranker must contribute under md_id filter — "
+            "check_compliance's both_rankers_agree confidence depends on it"
+        )
+        assert by_id["target"]["vec_distance"] is not None
+
+
+def test_dense_overfetch_survives_withdrawn_cluster(tmp_path: Path) -> None:
+    """With include_withdrawn=False, a cluster of withdrawn chunks nearest the
+    query must not empty the dense side — the KNN over-fetches before the
+    status drop. Regression for k=limit (no over-fetch)."""
+    from rbi_source_mcp.db import search_chunks_vec
+
+    db_path = tmp_path / "withdrawn.sqlite"
+    with connect(db_path) as conn:
+        dim = _detect_embedding_dim(conn)
+        if dim is None:
+            pytest.skip("sqlite-vec extension not available")
+
+        _seed_document(conn, document_id="rbi:master_direction:1", md_id="1")
+        _seed_document(conn, document_id="rbi:master_direction:2", md_id="2")
+        conn.execute(
+            "UPDATE documents SET status='withdrawn' WHERE document_id='rbi:master_direction:1'"
+        )
+        query_vec = [1.0] + [0.0] * (dim - 1)
+
+        # Withdrawn doc: 10 chunks AT the query (the global nearest).
+        for i in range(10):
+            _seed_chunk(
+                conn,
+                chunk_id=f"w{i}",
+                document_id="rbi:master_direction:1",
+                md_id="1",
+                text=f"withdrawn {i}",
+                embedding=[1.0, 0.0001 * i] + [0.0] * (dim - 2),
+            )
+        # Current doc: one chunk, farther from the query.
+        _seed_chunk(
+            conn,
+            chunk_id="keep",
+            document_id="rbi:master_direction:2",
+            md_id="2",
+            text="current chunk",
+            embedding=[0.8, 0.5] + [0.0] * (dim - 2),
+        )
+
+        dense = search_chunks_vec(conn, _f32_vec(query_vec), limit=3, include_withdrawn=False)
+        ids = [r["chunk_id"] for r in dense]
+        assert "keep" in ids, "over-fetch must surface the current chunk past the withdrawn cluster"
+        assert all(not i.startswith("w") for i in ids), "withdrawn chunks must be dropped"
+
+
 def test_sparse_only_fast_path_populates_bm25_only(tmp_path: Path) -> None:
     """When dense returns nothing, the sparse-only fast path returns
     rows with bm25_score populated and vec_distance None.
