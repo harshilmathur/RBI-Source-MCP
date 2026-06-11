@@ -10,7 +10,7 @@ Schema:
     crawl_runs         -- audit trail of every crawl
     chunks             -- citable paragraph rows from indexed MDs
     chunks_fts         -- FTS5 inverted index over chunks.text (sparse)
-    chunks_vec         -- sqlite-vec virtual table, 384-dim float32 (dense)
+    chunks_vec         -- sqlite-vec virtual table, 768-dim float32 (dense; dim = embedding_config.DIM)
     pdf_artifacts      -- audit trail of PDF fetches and extractions
 
 The DB file is rebuilt by the daily corpus-release GitHub Action
@@ -26,10 +26,11 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
 import structlog
+
+from ._time import iso_utc_now
 
 logger = structlog.get_logger(__name__)
 
@@ -222,7 +223,7 @@ CORPUS_SCHEMA_VERSION = "1"
 # separately because virtual-table DDL requires the extension to be loaded.
 # Dimension is driven by embedding_config.DIM so an A/B run with a different
 # embedding model (bge-base@768, bge-m3@1024, etc.) doesn't need a code
-# change here. Default stays 384 for the legacy bge-small-en-v1.5 path.
+# change here. The current default is bge-base-en-v1.5 @ 768 dimensions.
 def _chunks_vec_schema_sql() -> str:
     from . import embedding_config as _cfg
 
@@ -517,7 +518,7 @@ def init_db(db_path: str | Path) -> None:
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     """Upsert a corpus_meta row. Stamps `updated_at` to now (UTC, ISO 8601)."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = iso_utc_now()
     conn.execute(
         """
         INSERT INTO corpus_meta (key, value, updated_at)
@@ -848,7 +849,10 @@ def hybrid_search(
         if chunk_id in dense_rank:
             s += 1.0 / (rrf_k + dense_rank[chunk_id])
         scored.append((s, chunk_id))
-    scored.sort(reverse=True)
+    # Sort by fusion score descending. Python's sort is stable, so equal-score
+    # ties keep insertion order (sparse hits before dense) rather than an
+    # arbitrary chunk_id-descending lexical bias.
+    scored.sort(key=lambda sc: sc[0], reverse=True)
 
     out: list[dict] = []
     for fusion_score, chunk_id in scored[:limit]:
@@ -921,7 +925,8 @@ def escape_fts5_query(text: str) -> str:
         1. Tokenize on word boundaries.
         2. Drop tokens that are pure punctuation or empty.
         3. Quote each remaining token to prevent operator interpretation.
-        4. Join with spaces (implicit AND of phrases by FTS5 default).
+        4. OR-join the quoted tokens, so a clause matches chunks containing ANY
+           of its terms (recall-oriented; the dense ranker supplies precision).
     """
     import re
 

@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import httpx
 import structlog
 
+from .._time import iso_utc_now
 from ._common import get_with_retry
 
 logger = structlog.get_logger(__name__)
@@ -103,7 +103,7 @@ def fetch_pdf(
             return PdfFetchResult(
                 pdf_url=pdf_url,
                 referer=referer,
-                fetched_at=datetime.utcnow().isoformat() + "Z",
+                fetched_at=iso_utc_now(),
                 status_code=status or 0,
                 bytes=0,
                 pdf_sha256="",
@@ -131,7 +131,7 @@ def fetch_pdf(
         return PdfFetchResult(
             pdf_url=pdf_url,
             referer=referer,
-            fetched_at=datetime.utcnow().isoformat() + "Z",
+            fetched_at=iso_utc_now(),
             status_code=resp.status_code,
             bytes=len(content),
             pdf_sha256=sha,

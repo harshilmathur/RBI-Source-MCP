@@ -17,8 +17,9 @@ unavailable for a given query (e.g., model load failure).
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
 from typing import Any
+
+from .._time import iso_utc_now
 
 # Reuse the shared safe-embed helper from mcp/search.py — both tools need
 # identical reason-code mapping so a degraded retrieval path looks the
@@ -75,7 +76,7 @@ def check_compliance(
     returns a well-formed envelope with `relevant_provisions: []` and
     `low_confidence: true`.
     """
-    now = datetime.utcnow().isoformat() + "Z"
+    now = iso_utc_now()
     raw = (text or "").strip()
 
     response: dict[str, Any] = {
@@ -169,10 +170,10 @@ def check_compliance(
 
 
 _CAVEAT = (
-    "v0.5 hybrid retrieval (FTS5 + sqlite-vec dense embeddings, RRF fusion). "
-    "Corpus is currently limited to indexed Master Directions; coverage "
-    "expands as more MDs are indexed. Provisions returned here are source "
-    "material only; this MCP does not issue legal opinions or compliance "
+    "Hybrid retrieval (FTS5 sparse + sqlite-vec dense embeddings, RRF fusion) "
+    "over indexed RBI source material: Master Directions, Standalone Circulars, "
+    "Master Circulars, Press Releases, and FAQs. Provisions returned here are "
+    "source material only; this MCP does not issue legal opinions or compliance "
     "verdicts. Verify with a human compliance reviewer before acting."
 )
 

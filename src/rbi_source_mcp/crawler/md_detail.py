@@ -27,6 +27,7 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
+from .._time import iso_utc_now
 from ._common import USER_AGENT, get_with_retry
 
 logger = structlog.get_logger(__name__)
@@ -81,7 +82,7 @@ def fetch_detail(md_id: str, *, client: httpx.Client | None = None, timeout: flo
             md_id=md_id,
             detail_url=url,
             final_url=str(resp.url),
-            fetched_at=datetime.utcnow().isoformat() + "Z",
+            fetched_at=iso_utc_now(),
             status_code=resp.status_code,
             raw_html=html,
             raw_html_sha256=raw_sha,

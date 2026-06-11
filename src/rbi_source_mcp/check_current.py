@@ -28,6 +28,7 @@ import sqlite3
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from ._time import iso_utc_now
 from .crawler import md_list, withdrawn_list
 from .db import find_md_by_id, find_withdrawn_by_original_id
 
@@ -108,9 +109,8 @@ def check_current(conn: sqlite3.Connection, url_or_ref: str) -> dict[str, Any]:
                 "source_url": str,
             }
     """
-    from datetime import datetime
 
-    now = datetime.utcnow().isoformat() + "Z"
+    now = iso_utc_now()
     raw = (url_or_ref or "").strip()
 
     if not raw:
