@@ -21,6 +21,8 @@ from pathlib import Path
 import httpx
 import structlog
 
+from ._common import get_with_retry
+
 logger = structlog.get_logger(__name__)
 
 # A real Chrome 127 User-Agent. The WAF appears to validate User-Agent shape
@@ -88,8 +90,28 @@ def fetch_pdf(
     try:
         logger.info("pdf_fetch.start", url=pdf_url, referer=referer)
         # We pass headers per-request because the caller may have given us a
-        # client without browser headers configured.
-        resp = client.get(pdf_url, headers=headers)
+        # client without browser headers configured. Route through the retry
+        # helper so a transient WAF 403/429 (or 5xx / transport blip) is
+        # retried with backoff instead of permanently dropping the document —
+        # like every other crawler fetch. A 200-but-HTML WAF challenge is NOT
+        # retryable, so it still falls through to the is_pdf body check below.
+        try:
+            resp = get_with_retry(client, pdf_url, headers=headers)
+        except httpx.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.error("pdf_fetch.http_error", url=pdf_url, status=status, error=str(exc))
+            return PdfFetchResult(
+                pdf_url=pdf_url,
+                referer=referer,
+                fetched_at=datetime.utcnow().isoformat() + "Z",
+                status_code=status or 0,
+                bytes=0,
+                pdf_sha256="",
+                local_path=out_dir / "_fetch_failed",
+                is_pdf=False,
+                content_type="",
+                error=f"fetch failed after retries: {type(exc).__name__}: {exc}",
+            )
         content = resp.content
         content_type = resp.headers.get("content-type", "")
         is_pdf = content_type.startswith("application/pdf") and content[:4] == b"%PDF"

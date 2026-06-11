@@ -56,6 +56,16 @@ class MasterCircularCrawlResult:
     source_url: str
     raw_html_sha256: str
     master_circulars: list[MasterCircular] = field(default_factory=list)
+    categories_total: int = 0
+    failed_categories: list[str] = field(default_factory=list)
+
+    @property
+    def is_complete(self) -> bool:
+        """True only if categories were discovered and every one was fetched.
+
+        The consumer (build_master_circular_index) checks this and fails closed
+        rather than indexing a silently-partial master-circular family."""
+        return self.categories_total > 0 and not self.failed_categories
 
 
 def crawl(client: httpx.Client | None = None, *, timeout: float = 30.0) -> MasterCircularCrawlResult:
@@ -77,14 +87,28 @@ def crawl(client: httpx.Client | None = None, *, timeout: float = 30.0) -> Maste
 
         categories = _parse_category_index(index_html, base_url=str(resp.url))
         logger.info("master_circular_list.categories", count=len(categories))
+        if not categories:
+            # Zero categories = the index layout changed or a WAF challenge was
+            # served instead of the page. Returning an empty result would
+            # silently ship an empty master-circular family; fail closed.
+            raise RuntimeError(
+                f"master-circular index yielded 0 categories from {INDEX_URL} "
+                "(layout change or WAF block) — refusing to ship a partial corpus"
+            )
 
         all_circulars: list[MasterCircular] = []
         seen_pdfs: set[str] = set()
+        failed: list[str] = []
         for cat_label, cat_url in categories:
             try:
                 cat_resp = get_with_retry(client, cat_url)
             except httpx.HTTPError as exc:
-                logger.warning("master_circular_list.category_fail", url=cat_url, error=str(exc))
+                # ERROR (not warning): a dropped category silently shrinks the
+                # corpus. is_complete=False so the consumer can fail closed.
+                logger.error(
+                    "master_circular_list.category_fail", url=cat_url, label=cat_label, error=str(exc)
+                )
+                failed.append(cat_label)
                 continue
             cat_circulars = _parse_category_page(
                 cat_resp.text,
@@ -96,11 +120,16 @@ def crawl(client: httpx.Client | None = None, *, timeout: float = 30.0) -> Maste
             all_circulars.extend(cat_circulars)
             logger.info("master_circular_list.category_done", department=cat_label, count=len(cat_circulars))
 
+        if failed:
+            logger.error("master_circular_list.partial", failed=failed, total=len(categories))
+
         return MasterCircularCrawlResult(
             fetched_at=datetime.utcnow().isoformat() + "Z",
             source_url=INDEX_URL,
             raw_html_sha256=raw_sha,
             master_circulars=all_circulars,
+            categories_total=len(categories),
+            failed_categories=failed,
         )
     finally:
         if own_client:
