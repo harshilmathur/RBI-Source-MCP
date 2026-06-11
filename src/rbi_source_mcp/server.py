@@ -38,10 +38,26 @@ from .disclaimer import DISCLAIMER, LLM_INSTRUCTION
 from .mcp.check_compliance import check_compliance
 from .mcp.get_document import get_document
 from .mcp.search import search
+from .mcp.topics import TOPIC_TO_MD_ID
 
 logger = structlog.get_logger(__name__)
 
 DEFAULT_DB_PATH = "./data/db.sqlite"
+
+# Clamp the per-call result limit. Without this, a negative `limit` slices
+# weirdly and a huge one wastes the embedder/DB; the schema declares a default
+# of 5 but doesn't bound the range, so we clamp defensively in the handler
+# (graceful, vs. a disclaimer-less schema-validation rejection).
+_MIN_LIMIT = 1
+_MAX_LIMIT = 50
+
+
+def _clamp_limit(value: Any, default: int = 5) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = default
+    return max(_MIN_LIMIT, min(_MAX_LIMIT, n))
 
 # Hard cap on user-supplied free-text fields (`text` for check_compliance,
 # `query` for search, etc.). The MCP server runs single-process; a
@@ -320,9 +336,15 @@ def _build_server() -> Server:
         # (sqlite OperationalError, embedder OOM, model load failure, etc.)
         # are returned as a structured `_wrap_response`-wrapped error rather
         # than escaping to the MCP SDK which returns its OWN error envelope
-        # without our disclaimer fields. The legal-posture contract is that
-        # EVERY tool response carries `_disclaimer` + `_llm_instruction`,
-        # including failures. Don't let an exception break that.
+        # without our disclaimer fields. Every tool response that reaches this
+        # handler carries `_disclaimer` + `_llm_instruction`, including failures.
+        #
+        # Caveat: the SDK validates `arguments` against each tool's inputSchema
+        # BEFORE this handler runs, so a schema-validation rejection (missing
+        # required field, wrong type) returns the SDK's bare error WITHOUT the
+        # disclaimer. That's acceptable: such a response carries no RBI/retrieval
+        # content — it only tells the caller their request was malformed — so the
+        # legal-posture invariant (disclaimer on every substantive response) holds.
         #
         # Telemetry: a single `mcp_tool_called` event fires from the finally
         # block at the bottom of this function. Status + extra_props are
@@ -354,13 +376,19 @@ def _build_server() -> Server:
             if name == "rbi_check_compliance":
                 text = args.get("text", "") or ""
                 topic_hint = args.get("topic_hint")
-                limit = int(args.get("limit", 5))
+                limit = _clamp_limit(args.get("limit", 5))
                 extra_props["text_length_bucket"] = telemetry.text_length_bucket(len(text))
                 extra_props["limit"] = limit
                 if topic_hint:
-                    # topic_hint is a closed enum (kyc/uli/digital_lending/...) —
-                    # safe to send. Cardinality stays bounded.
-                    extra_props["topic_hint"] = str(topic_hint)
+                    # topic_hint is FREE TEXT in the schema, so only emit it to
+                    # telemetry when it's a recognized alias — otherwise emit a
+                    # constant. Keeps cardinality bounded and never captures
+                    # arbitrary user text (telemetry is shape-only by contract).
+                    extra_props["topic_hint"] = (
+                        str(topic_hint).lower()
+                        if str(topic_hint).lower() in TOPIC_TO_MD_ID
+                        else "other"
+                    )
                 if len(text) > MAX_INPUT_LEN:
                     status = "input_too_large"
                     return [_input_too_large_response(name, "text", len(text))]
@@ -381,7 +409,7 @@ def _build_server() -> Server:
             if name == "rbi_search":
                 query = args.get("query", "") or ""
                 filters = args.get("filters") or {}
-                limit = int(args.get("limit", 5))
+                limit = _clamp_limit(args.get("limit", 5))
                 extra_props["query_length_bucket"] = telemetry.query_length_bucket(len(query))
                 extra_props["has_filters"] = bool(filters)
                 extra_props["limit"] = limit

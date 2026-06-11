@@ -139,3 +139,34 @@ def test_response_always_wrapped_with_disclaimer_on_error(
         body = _call_tool(name, args)
         assert "_disclaimer" in body, f"missing _disclaimer in {name} response"
         assert "_llm_instruction" in body, f"missing _llm_instruction in {name}"
+
+
+def test_clamp_limit_bounds() -> None:
+    """Negative / huge / non-int limits are clamped, not passed through."""
+    from rbi_source_mcp.server import _MAX_LIMIT, _MIN_LIMIT, _clamp_limit
+
+    assert _clamp_limit(-5) == _MIN_LIMIT
+    assert _clamp_limit(0) == _MIN_LIMIT
+    assert _clamp_limit(10_000) == _MAX_LIMIT
+    assert _clamp_limit("not-an-int") == 5  # falls back to default
+    assert _clamp_limit(7) == 7
+
+
+def test_search_warns_on_unhonored_filters() -> None:
+    """rbi_search must surface a caveat for declared-but-unimplemented filters
+    rather than silently ignoring them."""
+    import sqlite3
+
+    from rbi_source_mcp.db import connect
+    from rbi_source_mcp.mcp.search import search
+
+    with connect(":memory:") as conn:
+        assert isinstance(conn, sqlite3.Connection)
+        res = search(
+            conn,
+            "net worth requirements",
+            filters={"regulated_entity": "NBFC", "as_of_date": "2024-01-01"},
+        )
+    assert "filter_warning" in res
+    assert "regulated_entity" in res["filter_warning"]
+    assert "as_of_date" in res["filter_warning"]

@@ -102,6 +102,17 @@ def search(
         "tool": "rbi_search",
     }
 
+    # The schema declares `regulated_entity` and `as_of_date` filters that this
+    # version does not implement. Surface a caveat (like get_document's `as_of`)
+    # instead of silently ignoring them — a silent no-op on a compliance/
+    # time-scoping filter is a wrong-results trap.
+    unhonored = [k for k in ("regulated_entity", "as_of_date") if filters.get(k)]
+    if unhonored:
+        response["filter_warning"] = (
+            "These filters were provided but are NOT applied at this version, so "
+            f"results are not scoped by them: {', '.join(unhonored)}."
+        )
+
     if not raw:
         response["message"] = "Empty query."
         return response
