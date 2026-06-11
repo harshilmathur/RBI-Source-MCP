@@ -13,14 +13,17 @@ anyone, and PKCE-validated token exchange. Tokens are stored in-process
 (single-machine deployment; rebuilds on every deploy are fine — clients
 re-register transparently).
 
-Backward compatibility: /mcp/ is NOT gated on the bearer token. Clients
-without OAuth (Claude Code, curl, etc.) keep working unchanged. The
-OAuth flow is purely for clients that REQUIRE the discovery walk
-(Claude.ai today; ChatGPT likely also).
-
-If real auth is ever needed (rate-limit-by-user, audit, etc.), swap the
-`issue_token` and `verify_token` helpers for a real backend without
-touching the route shape.
+Today /mcp/ is NOT gated on the bearer token (Claude Code, curl, etc.
+connect anonymously); the OAuth flow exists for clients that REQUIRE the
+discovery walk. But the ceremony is hardened as if it WERE the access-
+control boundary — because gating /mcp on the bearer is on the roadmap:
+  - PKCE is S256-only (`plain` is rejected; OAuth 2.1 deprecates it).
+  - `redirect_uri` is validated before any code is issued: dangerous
+    schemes are rejected, and a known client may only be redirected to a
+    redirect_uri it registered (closing the open-redirector).
+  - the issued code is bound to its client_id at the token endpoint.
+When gating lands, enforce `verify_token` on the /mcp path; the ceremony
+above already issues bearer tokens that are safe to trust.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import structlog
 from starlette.requests import Request
@@ -99,13 +102,31 @@ def _b64url(b: bytes) -> str:
 
 
 def _verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
-    """Verify a PKCE challenge per RFC 7636."""
-    if method == "plain":
-        return code_verifier == code_challenge
-    if method == "S256":
-        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-        return _b64url(digest) == code_challenge
-    return False
+    """Verify a PKCE challenge per RFC 7636. Only S256 is accepted — `plain`
+    offers no protection if the code is intercepted, and OAuth 2.1 deprecates
+    it. (authorize already rejects non-S256, so this is defense in depth.)"""
+    if method != "S256":
+        return False
+    if not code_verifier:
+        return False
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    return _b64url(digest) == code_challenge
+
+
+def _is_allowed_redirect_uri(uri: str) -> bool:
+    """Accept only an absolute http(s) redirect URI with a host and no
+    fragment; require https unless it's a loopback dev callback. Blocks
+    `javascript:` / `data:` and other open-redirect / XSS vectors."""
+    if not uri:
+        return False
+    try:
+        p = urlparse(uri)
+    except ValueError:
+        return False
+    if p.scheme not in ("https", "http") or not p.netloc or p.fragment:
+        return False
+    # http is allowed only for loopback dev callbacks.
+    return not (p.scheme == "http" and p.hostname not in ("localhost", "127.0.0.1", "::1"))
 
 
 def _public_base(request: Request) -> str:
@@ -168,7 +189,7 @@ async def authorization_server_metadata(request: Request) -> JSONResponse:
             "response_types_supported": ["code"],
             "response_modes_supported": ["query"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
-            "code_challenge_methods_supported": ["S256", "plain"],
+            "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none"],
             "service_documentation": f"{base}/",
         }
@@ -253,15 +274,32 @@ async def authorize(request: Request) -> JSONResponse | RedirectResponse:
             {"error": "invalid_request", "error_description": "code_challenge required (PKCE)"},
             status_code=400,
         )
-    if code_challenge_method not in ("S256", "plain"):
+    if code_challenge_method != "S256":
+        # OAuth 2.1 deprecates `plain`; Anthropic's connector uses S256.
         return JSONResponse(
-            {"error": "invalid_request", "error_description": "unsupported code_challenge_method"},
+            {"error": "invalid_request", "error_description": "only S256 code_challenge_method is supported"},
             status_code=400,
         )
-
-    # Auto-register clients we haven't seen — Claude.ai sometimes calls
-    # /authorize with a client_id from a different deploy session.
-    if client_id not in _store.clients:
+    # Validate the redirect target BEFORE issuing/redirecting a code, to close
+    # the open-redirector: reject dangerous schemes outright, and for a client
+    # we already know, require an exact match against a registered redirect_uri
+    # (return a 400 — do NOT redirect to an unvalidated URI).
+    if not _is_allowed_redirect_uri(redirect_uri):
+        return JSONResponse(
+            {"error": "invalid_request", "error_description": "invalid redirect_uri"},
+            status_code=400,
+        )
+    client = _store.clients.get(client_id)
+    if client is not None:
+        if redirect_uri not in client.redirect_uris:
+            return JSONResponse(
+                {"error": "invalid_request", "error_description": "redirect_uri not registered for this client"},
+                status_code=400,
+            )
+    else:
+        # Unknown client (in-memory store lost on restart, or a client_id reused
+        # across deploy sessions). Auto-register with this validated redirect_uri
+        # so the ceremony survives a restart; PKCE still binds the issued code.
         _store.clients[client_id] = _Client(
             client_id=client_id,
             redirect_uris=[redirect_uri],
@@ -281,8 +319,13 @@ async def authorize(request: Request) -> JSONResponse | RedirectResponse:
     _store.prune()
     logger.info("oauth.authorize.issued_code", client_id=client_id, scope=scope)
 
-    # Build the redirect with code + state.
-    qs = urlencode({k: v for k, v in {"code": code, "state": state}.items() if v})
+    # Build the redirect with code + state. Echo `state` back verbatim whenever
+    # the client sent it (even if empty) — it's the client's CSRF token and
+    # dropping it weakens that protection.
+    redirect_params = {"code": code}
+    if "state" in params:
+        redirect_params["state"] = state
+    qs = urlencode(redirect_params)
     sep = "&" if "?" in redirect_uri else "?"
     return RedirectResponse(url=f"{redirect_uri}{sep}{qs}", status_code=302)
 
@@ -317,6 +360,16 @@ async def token(request: Request) -> JSONResponse:
         if not record or record.expires_at < time.time():
             return JSONResponse(
                 {"error": "invalid_grant", "error_description": "code expired or already used"},
+                status_code=400,
+            )
+        # Bind the code to the client it was issued to: if the token request
+        # names a client_id, it must match the one the code was issued for
+        # (RFC 6749 §4.1.3). PKCE already binds via the verifier; this is
+        # defense in depth for the public-client flow.
+        req_client_id = body.get("client_id")
+        if req_client_id and req_client_id != record.client_id:
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "client_id mismatch for this code"},
                 status_code=400,
             )
         if redirect_uri and redirect_uri != record.redirect_uri:

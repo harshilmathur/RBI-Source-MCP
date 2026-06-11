@@ -132,7 +132,7 @@ async def test_full_oauth_flow_authcode_to_bearer_token() -> None:
             # 1. Register a fresh client.
             reg = await client.post(
                 "/register",
-                json={"redirect_uris": ["http://test/cb"], "client_name": "itest"},
+                json={"redirect_uris": ["https://claude.ai/cb"], "client_name": "itest"},
             )
             assert reg.status_code == 201
             client_id = reg.json()["client_id"]
@@ -143,7 +143,7 @@ async def test_full_oauth_flow_authcode_to_bearer_token() -> None:
                 params={
                     "response_type": "code",
                     "client_id": client_id,
-                    "redirect_uri": "http://test/cb",
+                    "redirect_uri": "https://claude.ai/cb",
                     "state": "xyz",
                     "code_challenge": challenge,
                     "code_challenge_method": "S256",
@@ -163,7 +163,7 @@ async def test_full_oauth_flow_authcode_to_bearer_token() -> None:
                 data={
                     "grant_type": "authorization_code",
                     "code": code,
-                    "redirect_uri": "http://test/cb",
+                    "redirect_uri": "https://claude.ai/cb",
                     "code_verifier": verifier,
                     "client_id": client_id,
                 },
@@ -190,7 +190,7 @@ async def test_token_exchange_rejects_wrong_pkce_verifier() -> None:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             reg = await client.post(
                 "/register",
-                json={"redirect_uris": ["http://test/cb"], "client_name": "itest"},
+                json={"redirect_uris": ["https://claude.ai/cb"], "client_name": "itest"},
             )
             client_id = reg.json()["client_id"]
             auth = await client.get(
@@ -198,7 +198,7 @@ async def test_token_exchange_rejects_wrong_pkce_verifier() -> None:
                 params={
                     "response_type": "code",
                     "client_id": client_id,
-                    "redirect_uri": "http://test/cb",
+                    "redirect_uri": "https://claude.ai/cb",
                     "code_challenge": challenge,
                     "code_challenge_method": "S256",
                 },
@@ -210,7 +210,7 @@ async def test_token_exchange_rejects_wrong_pkce_verifier() -> None:
                 data={
                     "grant_type": "authorization_code",
                     "code": code,
-                    "redirect_uri": "http://test/cb",
+                    "redirect_uri": "https://claude.ai/cb",
                     "code_verifier": wrong_verifier,
                 },
             )
@@ -233,7 +233,7 @@ async def test_authorize_rejects_missing_pkce() -> None:
                 params={
                     "response_type": "code",
                     "client_id": "anything",
-                    "redirect_uri": "http://test/cb",
+                    "redirect_uri": "https://claude.ai/cb",
                     # no code_challenge
                 },
                 follow_redirects=False,
@@ -255,7 +255,7 @@ async def test_authorize_code_is_one_shot() -> None:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             reg = await client.post(
                 "/register",
-                json={"redirect_uris": ["http://test/cb"]},
+                json={"redirect_uris": ["https://claude.ai/cb"]},
             )
             client_id = reg.json()["client_id"]
             auth = await client.get(
@@ -263,7 +263,7 @@ async def test_authorize_code_is_one_shot() -> None:
                 params={
                     "response_type": "code",
                     "client_id": client_id,
-                    "redirect_uri": "http://test/cb",
+                    "redirect_uri": "https://claude.ai/cb",
                     "code_challenge": challenge,
                     "code_challenge_method": "S256",
                 },
@@ -276,7 +276,7 @@ async def test_authorize_code_is_one_shot() -> None:
                 data={
                     "grant_type": "authorization_code",
                     "code": code,
-                    "redirect_uri": "http://test/cb",
+                    "redirect_uri": "https://claude.ai/cb",
                     "code_verifier": verifier,
                 },
             )
@@ -287,7 +287,7 @@ async def test_authorize_code_is_one_shot() -> None:
                 data={
                     "grant_type": "authorization_code",
                     "code": code,
-                    "redirect_uri": "http://test/cb",
+                    "redirect_uri": "https://claude.ai/cb",
                     "code_verifier": verifier,
                 },
             )
@@ -337,3 +337,119 @@ async def test_oauth_endpoints_use_separate_looser_bucket() -> None:
             assert RATE_LIMIT_PER_WINDOW > OAUTH_RATE_LIMIT_PER_WINDOW
             r = await client.get("/health")
             assert r.status_code in (200, 503)  # excluded from rate limit
+
+
+@pytest.mark.asyncio
+async def test_authorize_rejects_unregistered_redirect_uri() -> None:
+    """Open-redirect guard: a known client may only be redirected to a
+    redirect_uri it registered. A mismatch returns 400 (no redirect)."""
+    from rbi_source_mcp.server_http import build_asgi_app
+
+    _, challenge = _pkce_pair()
+    app = build_asgi_app()
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            reg = await client.post("/register", json={"redirect_uris": ["https://claude.ai/cb"]})
+            cid = reg.json()["client_id"]
+            r = await client.get(
+                "/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": cid,
+                    "redirect_uri": "https://evil.example/cb",  # not registered
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                },
+                follow_redirects=False,
+            )
+    assert r.status_code == 400
+    assert "redirect_uri" in r.json()["error_description"]
+
+
+@pytest.mark.asyncio
+async def test_authorize_rejects_dangerous_redirect_scheme() -> None:
+    """javascript:/data: and other non-http(s) redirect URIs are rejected."""
+    from rbi_source_mcp.server_http import build_asgi_app
+
+    _, challenge = _pkce_pair()
+    app = build_asgi_app()
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(
+                "/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": "mcp-x",
+                    "redirect_uri": "javascript:alert(1)",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                },
+                follow_redirects=False,
+            )
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_authorize_rejects_plain_pkce() -> None:
+    """OAuth 2.1: only S256 PKCE is accepted; `plain` is rejected at authorize."""
+    from rbi_source_mcp.server_http import build_asgi_app
+
+    _, challenge = _pkce_pair()
+    app = build_asgi_app()
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(
+                "/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": "mcp-x",
+                    "redirect_uri": "https://claude.ai/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "plain",
+                },
+                follow_redirects=False,
+            )
+    assert r.status_code == 400
+    assert "S256" in r.json()["error_description"]
+
+
+@pytest.mark.asyncio
+async def test_token_rejects_client_id_mismatch() -> None:
+    """The code is bound to its client: a /token request naming a different
+    client_id is rejected."""
+    from rbi_source_mcp.server_http import build_asgi_app
+
+    verifier, challenge = _pkce_pair()
+    app = build_asgi_app()
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            reg = await client.post("/register", json={"redirect_uris": ["https://claude.ai/cb"]})
+            cid = reg.json()["client_id"]
+            auth = await client.get(
+                "/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": cid,
+                    "redirect_uri": "https://claude.ai/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                },
+                follow_redirects=False,
+            )
+            code = parse_qs(urlparse(auth.headers["location"]).query)["code"][0]
+            tok = await client.post(
+                "/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "code_verifier": verifier,
+                    "redirect_uri": "https://claude.ai/cb",
+                    "client_id": "mcp-someone-else",
+                },
+            )
+    assert tok.status_code == 400
+    assert "client_id" in tok.json()["error_description"]
