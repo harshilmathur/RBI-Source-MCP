@@ -346,3 +346,48 @@ def test_content_hash_skip_bypassed_by_force(tmp_path: Path) -> None:
             force=True,
         )
         assert n_after > 0
+
+
+def test_dim_mismatch_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    """A misconfigured embedder (wrong output dimension) must abort the build,
+    not silently persist an FTS-only document the query embedder can't match."""
+    import numpy as np
+
+    from rbi_source_mcp.indexer import persist as persist_mod
+
+    # Return correctly-shaped batch but WRONG dimension (999 != configured).
+    monkeypatch.setattr(
+        persist_mod, "embed_texts", lambda texts: np.zeros((len(texts), 999), dtype="float32")
+    )
+    db_path = tmp_path / "dim.sqlite"
+    with connect(db_path) as conn, pytest.raises(ValueError, match="embedding dimension"):
+        _seed_one(conn, family="master_direction", md_id="999")
+
+
+def test_partial_dense_coverage_re_embeds_not_skipped(tmp_path: Path) -> None:
+    """A half-embedded document (chunks present but some vectors missing) must
+    NOT be content-hash-skipped on re-index — it must re-embed and self-heal,
+    rather than persisting the gap until the monthly full rebuild."""
+    db_path = tmp_path / "heal.sqlite"
+    with connect(db_path) as conn:
+        _seed_one(conn, family="master_direction", md_id="555")
+        try:
+            total_vec = conn.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0]
+        except Exception:  # noqa: BLE001
+            pytest.skip("sqlite-vec not available — dense path skipped")
+        if total_vec == 0:
+            pytest.skip("no dense vectors built in this environment")
+
+        # Simulate a half-embedded doc: drop one chunk's vector.
+        rowid = conn.execute(
+            "SELECT rowid FROM chunks WHERE document_id = 'rbi:master_direction:555' LIMIT 1"
+        ).fetchone()[0]
+        conn.execute("DELETE FROM chunks_vec WHERE rowid = ?", (rowid,))
+        assert conn.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0] == total_vec - 1
+
+        # Re-index with identical content: the content-hash skip must NOT fire
+        # (dense coverage is incomplete) so the missing vector is restored.
+        _seed_one(conn, family="master_direction", md_id="555")
+        assert conn.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0] == total_vec, (
+            "half-embedded doc must re-embed (not be skipped) on re-index"
+        )

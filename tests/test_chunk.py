@@ -134,3 +134,35 @@ def test_form_feed_separates_pages() -> None:
     by_anchor = {c.paragraph_anchor: c for c in chunks}
     assert by_anchor["1"].page == 1
     assert by_anchor["2"].page == 2
+
+
+def test_char_offsets_account_for_form_feed_across_pages() -> None:
+    """char_start/char_end must map back to the source text across page
+    boundaries. Regression for the missing form-feed (+1) accounting on the
+    non-empty-page branch, which drifted offsets one byte earlier per page."""
+    page1 = (
+        "1. Capital adequacy. Every regulated entity shall maintain a minimum "
+        "capital-to-risk-weighted-assets ratio of nine per cent computed on the "
+        "prescribed risk weights specified in the annex hereto for all banks.\n"
+    )
+    page2 = (
+        "2. Customer due diligence. Every regulated entity shall verify the "
+        "identity of each customer and carry out periodic KYC updates at the "
+        "frequency prescribed for the applicable risk category of the customer.\n"
+    )
+    text = page1 + "\x0c" + page2  # two pages separated by a form-feed
+    chunks = chunk_md_text(text, document_id="d", md_id="1")
+    assert len(chunks) >= 2
+
+    # Every chunk's char_start must land exactly on its first character —
+    # lstrip would hide a one-byte drift onto the form-feed, so check the raw char.
+    for c in chunks:
+        assert text[c.char_start] == c.text.strip()[0], (
+            f"offset drift: text[{c.char_start}]={text[c.char_start]!r} "
+            f"!= chunk first char {c.text.strip()[0]!r}"
+        )
+
+    # The page-2 paragraph must start exactly past page 1 + the form-feed byte.
+    p2 = [c for c in chunks if c.text.strip().startswith("2.")]
+    assert p2, "expected a page-2 chunk"
+    assert p2[0].char_start == len(page1) + 1
