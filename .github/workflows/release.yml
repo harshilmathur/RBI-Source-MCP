@@ -82,7 +82,7 @@ jobs:
       - name: Sigstore-sign wheel + sdist (BEFORE publish)
         # If this fails, the `build` job fails, downstream `publish` and
         # `attach-release` never run, so PyPI never sees an unsigned wheel.
-        uses: sigstore/gh-action-sigstore-python@04cffa1d795717b140764e8b640de88853c92acc  # pin: sigstore/gh-action-sigstore-python@v3.3.0
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1  # pin: sigstore/gh-action-sigstore-python@v3.4.0
         with:
           inputs: ./dist/*.tar.gz ./dist/*.whl
 
