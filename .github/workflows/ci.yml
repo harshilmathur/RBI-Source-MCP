@@ -38,7 +38,7 @@ jobs:
       # bump the key suffix if the default embedding model/revision ever changes
       # (see src/rbi_source_mcp/embedding_config.py).
       - name: Cache HuggingFace model
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
           key: hf-bge-base-en-v1.5-${{ runner.os }}
