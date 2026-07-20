@@ -133,7 +133,7 @@ jobs:
         run: rm -f dist/*.sigstore.json
 
       - name: Publish via trusted publishing
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # pin: pypa/gh-action-pypi-publish@v1.14.0
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247  # pin: pypa/gh-action-pypi-publish@v1.14.1
         # No `password:` field — the action exchanges the GitHub Actions
         # OIDC token for a short-lived PyPI upload token. PyPI verifies
         # the OIDC identity matches the trusted publisher registered
